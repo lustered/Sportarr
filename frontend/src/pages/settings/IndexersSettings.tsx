@@ -8,6 +8,7 @@ import apiClient from '../../api/client';
 import SettingsHeader from '../../components/SettingsHeader';
 import { useUnsavedChanges } from '../../hooks/useUnsavedChanges';
 import TagSelector from '../../components/TagSelector';
+import { MultiSelect } from '../../components/MultiSelect';
 
 
 interface Indexer {
@@ -37,6 +38,7 @@ interface Indexer {
   tags?: number[];
   cookie?: string;
   allowZeroSize?: boolean;
+  failDownloads?: number[];
 }
 
 type IndexerTemplate = {
@@ -155,6 +157,7 @@ export default function IndexersSettings() {
       const downloadClientId = getField('downloadClientId') as string;
       const cookie = getField('cookie') as string;
       const allowZeroSize = getField('allowZeroSize') as string;
+      const failDownloads = getField('failDownloads') as string;
       // Tags come as a top-level property from the API, not from fields
       const apiTags = indexer.tags;
 
@@ -190,6 +193,9 @@ export default function IndexersSettings() {
         downloadClientId: downloadClientId ? parseInt(downloadClientId, 10) : undefined,
         cookie: cookie || undefined,
         allowZeroSize: allowZeroSize === 'true',
+        failDownloads: failDownloads
+          ? failDownloads.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !Number.isNaN(n))
+          : [],
         tags: apiTags || []
       };
     });
@@ -372,6 +378,10 @@ export default function IndexersSettings() {
     if (indexer.allowZeroSize !== undefined) {
       fields.push({ name: 'allowZeroSize', value: String(indexer.allowZeroSize) });
     }
+    // Always emit failDownloads so the backend can clear the list by
+    // sending an empty string. List is converted back to int[] on the
+    // server side.
+    fields.push({ name: 'failDownloads', value: (indexer.failDownloads ?? []).join(',') });
     // Plain RSS indexers can't satisfy a search — force the two
     // search-enable flags off in the request so the UI doesn't show
     // them as enabled while the backend silently rejects them.
@@ -905,6 +915,29 @@ export default function IndexersSettings() {
               />
               <p className="text-xs text-gray-500 mt-1">
                 Download client ID to use for this indexer. 0 = use default
+              </p>
+            </div>
+
+            {/* Fail Downloads — escalation policy. Selected categories
+                cause the import path to fail+blocklist a release whose
+                download folder contains a matching file extension,
+                instead of just warning. UserDefinedExtensions is paired
+                with the comma-separated UserRejectedExtensions input on
+                the Media Management settings page. */}
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Fail Downloads</label>
+              <MultiSelect<number>
+                options={[
+                  { value: 0, label: 'Executables', hint: '.bat, .cmd, .exe, .sh' },
+                  { value: 1, label: 'Potentially Dangerous', hint: '.arj, .lnk, .lzh, .ps1, .scr, .vbs, .zipx' },
+                  { value: 2, label: 'User-Defined Extensions', hint: 'See Media Management → Importing' },
+                ]}
+                value={formData.failDownloads || []}
+                onChange={(next) => handleFormChange('failDownloads', next)}
+                placeholder="Select categories to fail (optional)..."
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                When the imported download folder contains a file with one of these extension types, treat the grab as failed (blocklist the release and trigger a re-search). Empty list = warn-only.
               </p>
             </div>
 

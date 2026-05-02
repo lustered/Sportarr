@@ -57,6 +57,7 @@ interface MediaManagementSettingsData {
   copyFiles: boolean;
   importExtraFiles: boolean;
   extraFileExtensions: string;
+  userRejectedExtensions: string;
   changeFileDate: string;
   recycleBin: string;
   recycleBinCleanup: number;
@@ -303,6 +304,7 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
     copyFiles: false,
     importExtraFiles: false,
     extraFileExtensions: 'srt,nfo',
+    userRejectedExtensions: '',
     changeFileDate: 'None',
     recycleBin: '',
     recycleBinCleanup: 7,
@@ -1318,6 +1320,26 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
               </p>
             </div>
           )}
+
+          {/* Pairs with the FailDownloads "User-Defined Extensions"
+              category set per indexer. Listed here in Importing because
+              that's where it lives in the upstream UX — and because
+              ExtraFileExtensions / UserRejectedExtensions are the two
+              "the user cares about file extensions" knobs and they
+              read more naturally side by side. */}
+          <div>
+            <label className="block text-white font-medium mb-2">User-Rejected Extensions</label>
+            <input
+              type="text"
+              value={settings.userRejectedExtensions ?? ''}
+              onChange={(e) => updateSetting('userRejectedExtensions', e.target.value)}
+              placeholder=".nfo, .url, .txt"
+              className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-red-600"
+            />
+            <p className="text-sm text-gray-400 mt-1">
+              Comma-separated extensions to count against an indexer's <em>Fail Downloads → User-Defined Extensions</em> policy. Leave blank to disable that category.
+            </p>
+          </div>
 
           {showAdvanced && (
             <>

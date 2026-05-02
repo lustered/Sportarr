@@ -871,6 +871,13 @@ public class SportarrDbContext : DbContext
                 (c1, c2) => c1 != null && c2 != null && c1.SequenceEqual(c2),
                 c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
                 c => c.ToList()));
+            entity.Property(i => i.FailDownloads).HasConversion(
+                v => System.Text.Json.JsonSerializer.Serialize(v, JsonSerializerOptionsProvider.Database),
+                v => System.Text.Json.JsonSerializer.Deserialize<List<int>>(v, JsonSerializerOptionsProvider.Database) ?? new List<int>()
+            ).Metadata.SetValueComparer(new ValueComparer<List<int>>(
+                (c1, c2) => c1 != null && c2 != null && c1.SequenceEqual(c2),
+                c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
+                c => c.ToList()));
             entity.HasOne(i => i.Status)
                   .WithOne(s => s.Indexer)
                   .HasForeignKey<IndexerStatus>(s => s.IndexerId)

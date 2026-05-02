@@ -206,6 +206,15 @@ public class MediaManagementSettings
     public bool ImportExtraFiles { get; set; } = false;
     public string ExtraFileExtensions { get; set; } = "srt,nfo";
 
+    /// <summary>
+    /// Comma-separated list of file extensions the user wants to count
+    /// against an indexer's FailDownloads=UserDefinedExtensions policy.
+    /// e.g. ".nfo, .url, txt". Leave blank to disable the user-defined
+    /// category (the Executables / PotentiallyDangerous categories are
+    /// hardcoded and unaffected by this).
+    /// </summary>
+    public string? UserRejectedExtensions { get; set; }
+
     // Permissions
     public bool SetPermissions { get; set; } = false;
     public string FileChmod { get; set; } = "644";

@@ -192,6 +192,35 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify Indexers RSS columns: {ex.Message}");
         }
 
+        // FailDownloads policy on Indexers (per-indexer JSON list of int
+        // enum values) and the matching UserRejectedExtensions free-form
+        // list on MediaManagementSettings. Both default to "no opinion" —
+        // FailDownloads = "[]" means warn-only behavior, and a null
+        // UserRejectedExtensions means the UserDefinedExtensions
+        // category is effectively unused even when checked on an indexer.
+        try
+        {
+            var checkFailDownloads = "SELECT COUNT(*) FROM pragma_table_info('Indexers') WHERE name='FailDownloads'";
+            if (db.Database.SqlQueryRaw<int>(checkFailDownloads).AsEnumerable().FirstOrDefault() == 0)
+            {
+                Console.WriteLine("[Sportarr] Indexers.FailDownloads column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE Indexers ADD COLUMN FailDownloads TEXT NOT NULL DEFAULT '[]'");
+                Console.WriteLine("[Sportarr] Indexers.FailDownloads column added successfully");
+            }
+
+            var checkUserRejected = "SELECT COUNT(*) FROM pragma_table_info('MediaManagementSettings') WHERE name='UserRejectedExtensions'";
+            if (db.Database.SqlQueryRaw<int>(checkUserRejected).AsEnumerable().FirstOrDefault() == 0)
+            {
+                Console.WriteLine("[Sportarr] MediaManagementSettings.UserRejectedExtensions column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE MediaManagementSettings ADD COLUMN UserRejectedExtensions TEXT");
+                Console.WriteLine("[Sportarr] MediaManagementSettings.UserRejectedExtensions column added successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not verify FailDownloads columns: {ex.Message}");
+        }
+
         // Drop the legacy persisted live-state columns from RootFolders.
         // These were previously persisted (Accessible / FreeSpace / TotalSpace
         // / LastChecked) but Phase 3 of the root-folders rework moved them to

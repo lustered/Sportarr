@@ -75,6 +75,9 @@ app.MapGet("/api/settings", async (ConfigService configService, SportarrDbContex
         UseHardlinks = config.UseHardlinks,
         ImportExtraFiles = config.ImportExtraFiles,
         ExtraFileExtensions = config.ExtraFileExtensions,
+        // UserRejectedExtensions is paired with the FailDownloads
+        // policy on indexers — surfaced under Importing in the UI.
+        UserRejectedExtensions = dbMediaSettings?.UserRejectedExtensions,
         ChangeFileDate = config.ChangeFileDate,
         RecycleBin = config.RecycleBin,
         RecycleBinCleanup = config.RecycleBinCleanup,
@@ -481,6 +484,9 @@ app.MapPut("/api/settings", async (AppSettings updatedSettings, ConfigService co
                 UseHardlinks = mediaManagementSettings.UseHardlinks,
                 ImportExtraFiles = mediaManagementSettings.ImportExtraFiles,
                 ExtraFileExtensions = mediaManagementSettings.ExtraFileExtensions ?? "srt,nfo",
+                UserRejectedExtensions = string.IsNullOrWhiteSpace(mediaManagementSettings.UserRejectedExtensions)
+                    ? null
+                    : mediaManagementSettings.UserRejectedExtensions.Trim(),
                 ChangeFileDate = mediaManagementSettings.ChangeFileDate ?? "None",
                 RecycleBin = mediaManagementSettings.RecycleBin ?? "",
                 RecycleBinCleanup = mediaManagementSettings.RecycleBinCleanup,
@@ -518,6 +524,9 @@ app.MapPut("/api/settings", async (AppSettings updatedSettings, ConfigService co
             dbSettings.UseHardlinks = mediaManagementSettings.UseHardlinks;
             dbSettings.ImportExtraFiles = mediaManagementSettings.ImportExtraFiles;
             dbSettings.ExtraFileExtensions = mediaManagementSettings.ExtraFileExtensions;
+            dbSettings.UserRejectedExtensions = string.IsNullOrWhiteSpace(mediaManagementSettings.UserRejectedExtensions)
+                ? null
+                : mediaManagementSettings.UserRejectedExtensions.Trim();
             dbSettings.ChangeFileDate = mediaManagementSettings.ChangeFileDate;
             dbSettings.RecycleBin = mediaManagementSettings.RecycleBin;
             dbSettings.RecycleBinCleanup = mediaManagementSettings.RecycleBinCleanup;

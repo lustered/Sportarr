@@ -1663,6 +1663,10 @@ namespace Sportarr.Api.Migrations
                     b.Property<bool>("Enabled")
                         .HasColumnType("INTEGER");
 
+                    b.Property<string>("FailDownloads")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
                     b.Property<int?>("GrabLimit")
                         .HasColumnType("INTEGER");
 
@@ -2230,6 +2234,9 @@ namespace Sportarr.Api.Migrations
 
                     b.Property<bool>("UseHardlinks")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("UserRejectedExtensions")
+                        .HasColumnType("TEXT");
 
                     b.HasKey("Id");
 

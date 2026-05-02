@@ -570,6 +570,21 @@ public class EnhancedDownloadMonitorService : BackgroundService
                     download.Title);
             }
         }
+        catch (IndexerFailDownloadException ex)
+        {
+            // FailDownloads policy match. Skip the retry-count loop —
+            // pin to Failed so the next monitor pass takes the
+            // status-transition path in HandleFailedDownload, which
+            // adds to the blocklist and (if redownloadFailed is on)
+            // schedules a re-search. Bumping ImportRetryCount here
+            // would burn the retry budget on a release that's never
+            // going to import successfully.
+            _logger.LogWarning(
+                "[Enhanced Download Monitor] ✗ FailDownloads policy fired ({Reason}) for {Title}: {Message}",
+                ex.Reason, download.Title, ex.Message);
+            download.Status = DownloadStatus.Failed;
+            download.ErrorMessage = ex.Message;
+        }
         catch (Exception ex)
         {
             download.ImportRetryCount = (download.ImportRetryCount ?? 0) + 1;

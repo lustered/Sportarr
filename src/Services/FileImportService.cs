@@ -1,10 +1,29 @@
 using System.Runtime.InteropServices;
 using Sportarr.Api.Data;
+using Sportarr.Api.Helpers;
 using Sportarr.Api.Models;
 using Sportarr.Api.Services.Interfaces;
 using Microsoft.EntityFrameworkCore;
 
 namespace Sportarr.Api.Services;
+
+/// <summary>
+/// Thrown by the import path when a file in the download folder matches
+/// a category the indexer's FailDownloads policy says should be treated
+/// as a hard fail (rather than a soft "warn but keep importing"). The
+/// monitor service catches this specifically and skips the retry-count
+/// loop — straight to Failed status, which triggers the existing
+/// blocklist + research pipeline. Message is the user-facing reason.
+/// </summary>
+public class IndexerFailDownloadException : Exception
+{
+    public FailDownloads Reason { get; }
+
+    public IndexerFailDownloadException(FailDownloads reason, string message) : base(message)
+    {
+        Reason = reason;
+    }
+}
 
 /// <summary>
 /// Handles importing downloaded media files into the library
@@ -137,6 +156,15 @@ public class FileImportService : IFileImportService
                     "SOLUTION 1 (Preferred): Ensure Docker volume mappings are consistent between download client and Sportarr. " +
                     "SOLUTION 2: If paths differ between containers, configure Remote Path Mapping in Settings > Download Clients.");
             }
+
+            // FailDownloads policy check. Walk every file in the download
+            // folder and check its extension against the indexer's
+            // configured FailDownloads categories. A match throws an
+            // IndexerFailDownloadException that the monitor service
+            // routes straight to Failed status (skip retry, blocklist,
+            // re-search). Indexers with no FailDownloads opinion (or
+            // downloads with no IndexerId) skip this block entirely.
+            await CheckFailDownloadsAsync(download, downloadPath);
 
             // Find video files
             var videoFiles = FindVideoFiles(downloadPath);
@@ -470,6 +498,66 @@ public class FileImportService : IFileImportService
             await _db.SaveChangesAsync();
 
             throw;
+        }
+    }
+
+    /// <summary>
+    /// <summary>
+    /// Scan the download folder for files whose extension matches a
+    /// category the indexer's FailDownloads policy says should fail the
+    /// download. Throws IndexerFailDownloadException on the first match
+    /// (the import path catches it and routes straight to a failed
+    /// download — see EnhancedDownloadMonitorService.HandleCompletedDownload).
+    /// No-op when the indexer has no FailDownloads opinion, or the
+    /// download lacks an IndexerId.
+    /// </summary>
+    private async Task CheckFailDownloadsAsync(DownloadQueueItem download, string downloadPath)
+    {
+        if (download.IndexerId == null) return;
+
+        var indexer = await _db.Indexers.FindAsync(download.IndexerId.Value);
+        if (indexer?.FailDownloads == null || indexer.FailDownloads.Count == 0) return;
+
+        if (!Directory.Exists(downloadPath)) return;
+
+        // Enumerate ALL files (recursively) in the download folder. This
+        // is intentionally agnostic to "is this the main video?" — the
+        // whole point of the policy is to catch fishy companion files
+        // that the regular import would otherwise leave sitting in the
+        // download client's staging area.
+        var files = Directory.EnumerateFiles(downloadPath, "*.*", SearchOption.AllDirectories);
+
+        var rejectedExtensions = indexer.FailDownloads.Contains((int)FailDownloads.UserDefinedExtensions)
+            ? RejectedFileExtensions.ParseUserList((await GetMediaManagementSettingsAsync()).UserRejectedExtensions)
+            : null;
+
+        foreach (var file in files)
+        {
+            var ext = Path.GetExtension(file);
+            if (string.IsNullOrEmpty(ext)) continue;
+
+            if (indexer.FailDownloads.Contains((int)FailDownloads.Executables) &&
+                RejectedFileExtensions.Executables.Contains(ext))
+            {
+                throw new IndexerFailDownloadException(FailDownloads.Executables,
+                    $"Indexer FailDownloads policy: download contains an executable file ({Path.GetFileName(file)}). " +
+                    "Failing the grab and adding the release to the blocklist.");
+            }
+
+            if (indexer.FailDownloads.Contains((int)FailDownloads.PotentiallyDangerous) &&
+                RejectedFileExtensions.Dangerous.Contains(ext))
+            {
+                throw new IndexerFailDownloadException(FailDownloads.PotentiallyDangerous,
+                    $"Indexer FailDownloads policy: download contains a potentially dangerous file ({Path.GetFileName(file)}). " +
+                    "Failing the grab and adding the release to the blocklist.");
+            }
+
+            if (rejectedExtensions != null && rejectedExtensions.Contains(ext))
+            {
+                throw new IndexerFailDownloadException(FailDownloads.UserDefinedExtensions,
+                    $"Indexer FailDownloads policy: download contains a user-rejected file extension ({Path.GetFileName(file)}). " +
+                    "Failing the grab and adding the release to the blocklist.");
+            }
         }
     }
 

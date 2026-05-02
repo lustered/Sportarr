@@ -268,6 +268,16 @@ public class Indexer
     [System.ComponentModel.DataAnnotations.MaxLength(50)]
     public string? RssSizeElementName { get; set; }
 
+    /// <summary>
+    /// Indexer-scoped FailDownloads policy. List of int values from the
+    /// FailDownloads enum (Executables=0, PotentiallyDangerous=1,
+    /// UserDefinedExtensions=2). When the import path detects a file
+    /// in the download folder whose extension matches a category the
+    /// user enabled here, the grab is escalated to a failed download
+    /// (blocklist + retry) instead of being silently warned and skipped.
+    /// </summary>
+    public List<int> FailDownloads { get; set; } = new();
+
     // Download client association
     public int? DownloadClientId { get; set; }
 

@@ -48,7 +48,8 @@ app.MapGet("/api/indexer", async (SportarrDbContext db) =>
             new { name = "rejectBlocklistedTorrentHashes", value = i.RejectBlocklistedTorrentHashes.ToString() },
             new { name = "downloadClientId", value = i.DownloadClientId?.ToString() ?? "" },
             new { name = "cookie", value = i.Cookie ?? "" },
-            new { name = "allowZeroSize", value = i.RssAllowZeroSize.ToString().ToLowerInvariant() }
+            new { name = "allowZeroSize", value = i.RssAllowZeroSize.ToString().ToLowerInvariant() },
+            new { name = "failDownloads", value = string.Join(",", i.FailDownloads ?? new List<int>()) }
         },
         tags = i.Tags ?? new List<int>()
     }).ToList();
@@ -149,6 +150,15 @@ app.MapPost("/api/indexer", async (HttpRequest request, SportarrDbContext db, IL
                         break;
                     case "allowZeroSize":
                         indexer.RssAllowZeroSize = string.Equals(fieldValue, "true", StringComparison.OrdinalIgnoreCase);
+                        break;
+                    case "failDownloads":
+                        indexer.FailDownloads = string.IsNullOrWhiteSpace(fieldValue)
+                            ? new List<int>()
+                            : fieldValue.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                .Select(s => int.TryParse(s.Trim(), out var v) ? (int?)v : null)
+                                .Where(v => v.HasValue)
+                                .Select(v => v!.Value)
+                                .ToList();
                         break;
                 }
             }
@@ -295,6 +305,15 @@ app.MapPut("/api/indexer/{id:int}", async (int id, HttpRequest request, Sportarr
                         break;
                     case "allowZeroSize":
                         indexer.RssAllowZeroSize = string.Equals(fieldValue, "true", StringComparison.OrdinalIgnoreCase);
+                        break;
+                    case "failDownloads":
+                        indexer.FailDownloads = string.IsNullOrWhiteSpace(fieldValue)
+                            ? new List<int>()
+                            : fieldValue.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                .Select(s => int.TryParse(s.Trim(), out var v) ? (int?)v : null)
+                                .Where(v => v.HasValue)
+                                .Select(v => v!.Value)
+                                .ToList();
                         break;
                 }
             }
@@ -489,6 +508,15 @@ app.MapPost("/api/indexer/test", async (
                         break;
                     case "allowZeroSize":
                         indexer.RssAllowZeroSize = string.Equals(fieldValue, "true", StringComparison.OrdinalIgnoreCase);
+                        break;
+                    case "failDownloads":
+                        indexer.FailDownloads = string.IsNullOrWhiteSpace(fieldValue)
+                            ? new List<int>()
+                            : fieldValue.Split(',', StringSplitOptions.RemoveEmptyEntries)
+                                .Select(s => int.TryParse(s.Trim(), out var v) ? (int?)v : null)
+                                .Where(v => v.HasValue)
+                                .Select(v => v!.Value)
+                                .ToList();
                         break;
                 }
             }
