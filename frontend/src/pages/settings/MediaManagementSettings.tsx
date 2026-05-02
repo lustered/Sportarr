@@ -135,6 +135,11 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
   const [showAddFolderModal, setShowAddFolderModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<number | null>(null);
   const [newFolderPath, setNewFolderPath] = useState('');
+  // Error from the most recent add-folder attempt. Surfaced inline in
+  // the Add modal so a validator rejection (write-test failed, system
+  // path, etc.) doesn't silently look like nothing happened.
+  const [addFolderError, setAddFolderError] = useState<string | null>(null);
+  const [addingFolder, setAddingFolder] = useState(false);
   const [showFileBrowser, setShowFileBrowser] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const initialSettings = useRef<MediaManagementSettingsData | null>(null);
@@ -557,9 +562,12 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
 
   const handleAddFolder = async () => {
     if (!newFolderPath.trim()) {
+      setAddFolderError('Folder path is required.');
       return;
     }
 
+    setAddFolderError(null);
+    setAddingFolder(true);
     try {
       const response = await apiPost('/api/rootfolder', {
         path: newFolderPath.trim(),
@@ -570,12 +578,18 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
         setRootFolders(prev => [...prev, newFolder]);
         setShowAddFolderModal(false);
         setNewFolderPath('');
+        setAddFolderError(null);
       } else {
-        const error = await response.json();
-        console.error('Failed to add root folder:', error.error);
+        const body = await response.json().catch(() => null);
+        const message = body?.error ?? `HTTP ${response.status}: ${response.statusText}`;
+        console.error('Failed to add root folder:', message);
+        setAddFolderError(message);
       }
     } catch (error) {
       console.error('Failed to add folder:', error);
+      setAddFolderError((error as Error)?.message ?? 'Network error contacting Sportarr.');
+    } finally {
+      setAddingFolder(false);
     }
   };
 
@@ -1901,7 +1915,10 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
                   <input
                     type="text"
                     value={newFolderPath}
-                    onChange={(e) => setNewFolderPath(e.target.value)}
+                    onChange={(e) => {
+                      setNewFolderPath(e.target.value);
+                      if (addFolderError) setAddFolderError(null);
+                    }}
                     className="flex-1 px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-red-600"
                     placeholder="/data/sportarr or C:\Media\Sportarr"
                   />
@@ -1924,6 +1941,14 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
                   and Sportarr has read/write permissions.
                 </p>
               </div>
+
+              {addFolderError && (
+                <div className="p-4 bg-red-950/30 border border-red-700/50 rounded-lg">
+                  <p className="text-sm text-red-300 whitespace-pre-wrap">
+                    <strong>Couldn't add folder:</strong> {addFolderError}
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="mt-6 flex items-center justify-end space-x-3">
@@ -1931,16 +1956,19 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
                 onClick={() => {
                   setShowAddFolderModal(false);
                   setNewFolderPath('');
+                  setAddFolderError(null);
                 }}
-                className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors"
+                disabled={addingFolder}
+                className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
                 onClick={handleAddFolder}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
+                disabled={addingFolder}
+                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors disabled:opacity-50"
               >
-                Add Folder
+                {addingFolder ? 'Adding…' : 'Add Folder'}
               </button>
             </div>
           </div>
