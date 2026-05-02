@@ -651,7 +651,14 @@ export default function LeagueDetailPage() {
     monitoredEventTypes: string | null,
     searchQueryTemplate: string | null,
     tags: number[],
+    // Edit modal hides the root-folder picker (changing root requires
+    // moving files; that's the move-league flow scheduled for the next
+    // phase). Param is accepted to keep the modal's onAdd signature
+    // stable but ignored here.
+    _rootFolderId: number | null,
   ) => {
+    void _rootFolderId;
+    void league;
     updateLeagueSettingsMutation.mutate({
       monitoredTeamIds,
       monitorType,

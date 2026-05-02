@@ -517,8 +517,11 @@ public class LibraryImportService
         var sourceFileInfo = new FileInfo(sourcePath);
         var extension = sourceFileInfo.Extension;
 
-        // Get best root folder
-        var rootFolder = await GetBestRootFolderAsync(settings, sourceFileInfo.Length);
+        // Resolve the root folder for this league. Prefers the league's
+        // explicit RootFolderId binding (set via the Add League modal),
+        // falls back to the legacy free-space heuristic when the league
+        // doesn't have one or the bound folder is missing/inaccessible.
+        var rootFolder = await GetRootFolderForLeagueAsync(settings, eventInfo.League, sourceFileInfo.Length);
 
         // Build destination path
         var destinationPath = rootFolder;
@@ -636,10 +639,30 @@ public class LibraryImportService
     }
 
     /// <summary>
-    /// Get best root folder based on free space
+    /// Resolve the root folder a league's media should be written into.
+    /// Prefers the explicit binding stored on the league, falls back to
+    /// the legacy free-space heuristic for legacy leagues without a
+    /// binding or whose bound root has gone missing.
     /// </summary>
-    private Task<string> GetBestRootFolderAsync(MediaManagementSettings settings, long fileSize)
+    private Task<string> GetRootFolderForLeagueAsync(MediaManagementSettings settings, League? league, long fileSize)
     {
+        if (settings.RootFolders == null || settings.RootFolders.Count == 0)
+        {
+            throw new Exception("No root folders configured. Please add a root folder in Settings > Media Management.");
+        }
+
+        if (league?.RootFolderId is int boundId)
+        {
+            var bound = settings.RootFolders.FirstOrDefault(rf => rf.Id == boundId);
+            if (bound != null && bound.Accessible)
+            {
+                return Task.FromResult(bound.Path);
+            }
+            _logger.LogWarning(
+                "[Root Folders] League {LeagueId} ({LeagueName}) is bound to RootFolderId={BoundId} but it's missing or inaccessible — falling back to free-space selection.",
+                league.Id, league.Name, boundId);
+        }
+
         var rootFolders = settings.RootFolders
             .Where(rf => rf.Accessible)
             .OrderByDescending(rf => rf.FreeSpace)

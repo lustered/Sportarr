@@ -131,6 +131,30 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify Blocklist.FilePath column: {ex.Message}");
         }
 
+        // Ensure RootFolderId column exists in Leagues table. Added so each
+        // league can be bound to a specific root folder at add time, instead
+        // of the importer reselecting one from the free-space heuristic on
+        // every import (which scattered a single league's events across
+        // multiple roots). Nullable so legacy leagues stay valid until the
+        // user picks a root for them.
+        try
+        {
+            var checkRootFolderIdSql = "SELECT COUNT(*) FROM pragma_table_info('Leagues') WHERE name='RootFolderId'";
+            var rootFolderIdExists = db.Database.SqlQueryRaw<int>(checkRootFolderIdSql).AsEnumerable().FirstOrDefault();
+
+            if (rootFolderIdExists == 0)
+            {
+                Console.WriteLine("[Sportarr] Leagues.RootFolderId column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE Leagues ADD COLUMN RootFolderId INTEGER");
+                db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS IX_Leagues_RootFolderId ON Leagues(RootFolderId)");
+                Console.WriteLine("[Sportarr] Leagues.RootFolderId column added successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not verify Leagues.RootFolderId column: {ex.Message}");
+        }
+
         // Ensure DisableSslCertificateValidation column exists in DownloadClients table (backwards compatibility fix)
         try
         {

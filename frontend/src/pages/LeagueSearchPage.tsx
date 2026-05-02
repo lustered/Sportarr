@@ -175,7 +175,8 @@ export default function LeagueSearchPage() {
       monitoredSessionTypes,
       monitoredEventTypes,
       searchQueryTemplate,
-      tags
+      tags,
+      rootFolderId,
     }: {
       league: League;
       monitoredTeamIds: string[];
@@ -188,6 +189,7 @@ export default function LeagueSearchPage() {
       monitoredEventTypes: string | null;
       searchQueryTemplate?: string | null;
       tags?: number[];
+      rootFolderId?: number | null;
     }) => {
       // Teamless sports (motorsport, golf, darts, climbing, gambling, individual
       // tennis, badminton, table tennis, snooker) and fighting leagues that
@@ -213,6 +215,7 @@ export default function LeagueSearchPage() {
         monitoredEventTypes: monitoredEventTypes,
         searchQueryTemplate: searchQueryTemplate,
         tags: tags,
+        rootFolderId: rootFolderId,
         logoUrl: league.strBadge || league.strLogo,
         bannerUrl: league.strBanner,
         posterUrl: league.strPoster,
@@ -447,6 +450,7 @@ export default function LeagueSearchPage() {
     monitoredEventTypes: string | null,
     searchQueryTemplate: string | null,
     tags: number[],
+    rootFolderId: number | null,
   ) => {
     const modalData = addModalDataRef.current;
     if (modalData?.editMode && modalData.leagueId) {
@@ -478,7 +482,8 @@ export default function LeagueSearchPage() {
         monitoredSessionTypes,
         monitoredEventTypes,
         searchQueryTemplate,
-        tags
+        tags,
+        rootFolderId
       });
     }
   };

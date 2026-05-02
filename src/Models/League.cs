@@ -100,6 +100,16 @@ public class League
     public int? QualityProfileId { get; set; }
 
     /// <summary>
+    /// The RootFolder this league's media should live under. Set at add time
+    /// from the Add League modal and used by the import path builder so a
+    /// single league always lands in the same root regardless of which root
+    /// has the most free space at any given import. Null for legacy leagues
+    /// added before this column existed; the importer falls back to the
+    /// free-space heuristic in that case.
+    /// </summary>
+    public int? RootFolderId { get; set; }
+
+    /// <summary>
     /// Automatically search for missing events when league is added or settings are updated
     /// This is a one-time search, not an ongoing background search
     /// </summary>
@@ -213,6 +223,12 @@ public class AddLeagueRequest
     public int? QualityProfileId { get; set; }
 
     /// <summary>
+    /// Optional root folder selection. If null, the importer picks by free
+    /// space; if set, the importer always uses this folder for the league.
+    /// </summary>
+    public int? RootFolderId { get; set; }
+
+    /// <summary>
     /// Automatically search for missing events when league is added or settings are updated
     /// This is a one-time search, not an ongoing background search
     /// </summary>
@@ -283,6 +299,7 @@ public class AddLeagueRequest
             Monitored = Monitored,
             MonitorType = MonitorType,
             QualityProfileId = QualityProfileId,
+            RootFolderId = RootFolderId,
             SearchForMissingEvents = SearchForMissingEvents,
             SearchForCutoffUnmetEvents = SearchForCutoffUnmetEvents,
             MonitoredParts = MonitoredParts,
@@ -315,6 +332,7 @@ public class LeagueResponse
     public bool Monitored { get; set; }
     public MonitorType MonitorType { get; set; }
     public int? QualityProfileId { get; set; }
+    public int? RootFolderId { get; set; }
     public bool SearchForMissingEvents { get; set; }
     public bool SearchForCutoffUnmetEvents { get; set; }
     public string? MonitoredParts { get; set; }
@@ -419,6 +437,7 @@ public class LeagueResponse
             Monitored = league.Monitored,
             MonitorType = league.MonitorType,
             QualityProfileId = league.QualityProfileId,
+            RootFolderId = league.RootFolderId,
             SearchForMissingEvents = league.SearchForMissingEvents,
             SearchForCutoffUnmetEvents = league.SearchForCutoffUnmetEvents,
             MonitoredParts = league.MonitoredParts,

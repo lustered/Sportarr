@@ -201,7 +201,7 @@ public class FileImportService : IFileImportService
 
             // Build destination path (use actual file size for debrid symlink compatibility)
             // Pass download.Quality to preserve quality info from original release title (not re-parsed from downloaded filename)
-            var rootFolder = await GetBestRootFolderAsync(settings, actualFileSize);
+            var rootFolder = await GetRootFolderForLeagueAsync(settings, eventInfo.League, actualFileSize);
             var destinationPath = await BuildDestinationPath(settings, eventInfo, parsed, fileInfo.Extension, rootFolder, sourceFile, download.Part, download.Quality);
 
             _logger.LogInformation("Destination path: {Path}", destinationPath);
@@ -1203,7 +1203,44 @@ public class FileImportService : IFileImportService
     /// <summary>
     /// Get best root folder based on free space
     /// </summary>
-    private Task<string> GetBestRootFolderAsync(MediaManagementSettings settings, long fileSize)
+    /// <summary>
+    /// Resolve the root folder a league's media should be written into.
+    /// Prefers the explicit binding stored on the league (set via the Add
+    /// League modal), falling back to the legacy free-space heuristic for
+    /// leagues that were added before the binding existed or whose bound
+    /// root folder has since been removed / become inaccessible.
+    /// </summary>
+    private Task<string> GetRootFolderForLeagueAsync(MediaManagementSettings settings, League? league, long fileSize)
+    {
+        if (settings.RootFolders == null || settings.RootFolders.Count == 0)
+        {
+            throw new Exception("No root folders configured");
+        }
+
+        if (league?.RootFolderId is int boundId)
+        {
+            var bound = settings.RootFolders.FirstOrDefault(rf => rf.Id == boundId);
+            if (bound != null && bound.Accessible)
+            {
+                return Task.FromResult(bound.Path);
+            }
+            // Fall through to the heuristic but log a warning so the user
+            // can spot a misconfigured league instead of having events
+            // silently scatter across other roots.
+            _logger.LogWarning(
+                "[Root Folders] League {LeagueId} ({LeagueName}) is bound to RootFolderId={BoundId} but it's missing or inaccessible — falling back to free-space selection.",
+                league.Id, league.Name, boundId);
+        }
+
+        return Task.FromResult(SelectRootFolderByFreeSpace(settings, fileSize));
+    }
+
+    /// <summary>
+    /// Legacy "biggest disk wins" selection — kept as a fallback for leagues
+    /// without a RootFolderId binding so existing setups keep importing.
+    /// New code should prefer GetRootFolderForLeagueAsync.
+    /// </summary>
+    private string SelectRootFolderByFreeSpace(MediaManagementSettings settings, long fileSize)
     {
         var rootFolders = settings.RootFolders
             .Where(rf => rf.Accessible)
@@ -1215,18 +1252,16 @@ public class FileImportService : IFileImportService
             throw new Exception("No accessible root folders configured");
         }
 
-        // Return first folder with enough space
         var fileSizeMB = fileSize / 1024 / 1024;
         var folder = rootFolders.FirstOrDefault(rf => rf.FreeSpace > fileSizeMB + settings.MinimumFreeSpace);
 
         if (folder == null)
         {
-            // Fall back to folder with most space
             folder = rootFolders.First();
             _logger.LogWarning("No root folder has enough free space, using folder with most space: {Path}", folder.Path);
         }
 
-        return Task.FromResult(folder.Path);
+        return folder.Path;
     }
 
     /// <summary>

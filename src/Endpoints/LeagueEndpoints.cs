@@ -1140,6 +1140,49 @@ app.MapPost("/api/leagues", async (HttpContext context, SportarrDbContext db, IS
             return Results.BadRequest(new { error = "League already exists in library" });
         }
 
+        // Resolve which RootFolder this league binds to. Explicit selection
+        // wins; if the request didn't include one and exactly one folder is
+        // configured we default to it (single-root setups don't need a
+        // picker). Zero folders configured is a hard error so the user
+        // doesn't end up with a league that can't import. Multiple folders
+        // configured but no selection leaves the column null and the
+        // importer falls back to the free-space heuristic — preserves the
+        // legacy behavior for older clients that don't yet send the field.
+        var allRootFolders = await db.RootFolders.ToListAsync();
+
+        if (league.RootFolderId.HasValue)
+        {
+            var bound = allRootFolders.FirstOrDefault(rf => rf.Id == league.RootFolderId.Value);
+            if (bound == null)
+            {
+                logger.LogWarning("[LEAGUES] Rejected: rootFolderId={Id} doesn't exist", league.RootFolderId.Value);
+                return Results.BadRequest(new { error = $"Root folder {league.RootFolderId.Value} does not exist." });
+            }
+            if (!bound.Accessible)
+            {
+                logger.LogWarning("[LEAGUES] Rejected: rootFolderId={Id} ({Path}) is not accessible", bound.Id, bound.Path);
+                return Results.BadRequest(new { error = $"Root folder {bound.Path} is not accessible." });
+            }
+        }
+        else
+        {
+            if (allRootFolders.Count == 0)
+            {
+                logger.LogWarning("[LEAGUES] Rejected: no root folders configured");
+                return Results.BadRequest(new { error = "Configure a root folder under Settings > Media Management before adding a league." });
+            }
+            if (allRootFolders.Count == 1)
+            {
+                league.RootFolderId = allRootFolders[0].Id;
+                logger.LogInformation("[LEAGUES] No root folder selected, defaulting to single configured folder: {Id} ({Path})",
+                    allRootFolders[0].Id, allRootFolders[0].Path);
+            }
+            else
+            {
+                logger.LogInformation("[LEAGUES] No root folder selected and multiple configured — leaving RootFolderId null (legacy free-space fallback at import time)");
+            }
+        }
+
         // Added timestamp is already set in ToLeague()
         db.Leagues.Add(league);
         await db.SaveChangesAsync();

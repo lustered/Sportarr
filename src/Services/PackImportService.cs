@@ -760,8 +760,9 @@ public class PackImportService
                 customFormatScore, string.Join(", ", matchedFormats));
         }
 
-        // Build destination path
-        var rootFolder = GetBestRootFolder(settings, fileInfo.Length);
+        // Build destination path. Prefer the league's bound RootFolderId
+        // when set, fall back to the legacy free-space heuristic otherwise.
+        var rootFolder = GetRootFolderForLeague(settings, eventInfo.League, fileInfo.Length);
         var destinationPath = await BuildDestinationPath(settings, eventInfo, parsed, fileInfo.Extension, rootFolder);
 
         _logger.LogDebug("[Pack Import] Destination path: {Path}", destinationPath);
@@ -938,8 +939,27 @@ public class PackImportService
         }
     }
 
-    private string GetBestRootFolder(MediaManagementSettings settings, long fileSize)
+    /// <summary>
+    /// Resolve the root folder for a league's pack import. Prefers an
+    /// explicit RootFolderId binding stored on the league, falls back to
+    /// free-space selection for legacy leagues without one.
+    /// </summary>
+    private string GetRootFolderForLeague(MediaManagementSettings settings, League? league, long fileSize)
     {
+        if (settings.RootFolders == null || settings.RootFolders.Count == 0)
+            throw new Exception("No root folders configured");
+
+        if (league?.RootFolderId is int boundId)
+        {
+            var bound = settings.RootFolders.FirstOrDefault(rf => rf.Id == boundId);
+            if (bound != null && bound.Accessible)
+                return bound.Path;
+
+            _logger.LogWarning(
+                "[Root Folders] League {LeagueId} ({LeagueName}) is bound to RootFolderId={BoundId} but it's missing or inaccessible — falling back to free-space selection.",
+                league.Id, league.Name, boundId);
+        }
+
         var rootFolders = settings.RootFolders
             .Where(rf => rf.Accessible)
             .OrderByDescending(rf => rf.FreeSpace)

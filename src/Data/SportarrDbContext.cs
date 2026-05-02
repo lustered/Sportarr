@@ -151,6 +151,15 @@ public class SportarrDbContext : DbContext
             entity.HasIndex(l => l.ExternalId);
             entity.HasIndex(l => l.Sport);
             entity.HasIndex(l => new { l.Name, l.Sport });
+            entity.HasIndex(l => l.RootFolderId);
+            // Restrict on delete: a RootFolder with bound leagues can't be
+            // deleted via the cascade. The endpoint surfaces a 409 with the
+            // offending league IDs (Phase 2) so the user has to either
+            // unbind or force the delete explicitly.
+            entity.HasOne<RootFolder>()
+                  .WithMany()
+                  .HasForeignKey(l => l.RootFolderId)
+                  .OnDelete(DeleteBehavior.Restrict);
             entity.Property(l => l.Tags).HasConversion(
                 v => System.Text.Json.JsonSerializer.Serialize(v, JsonSerializerOptionsProvider.Database),
                 v => System.Text.Json.JsonSerializer.Deserialize<List<int>>(v, JsonSerializerOptionsProvider.Database) ?? new List<int>()

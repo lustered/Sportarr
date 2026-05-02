@@ -2027,6 +2027,9 @@ namespace Sportarr.Api.Migrations
                     b.Property<int?>("QualityProfileId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("RootFolderId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<bool>("SearchForCutoffUnmetEvents")
                         .HasColumnType("INTEGER");
 
@@ -2050,6 +2053,8 @@ namespace Sportarr.Api.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("ExternalId");
+
+                    b.HasIndex("RootFolderId");
 
                     b.HasIndex("Sport");
 
@@ -3823,6 +3828,11 @@ namespace Sportarr.Api.Migrations
 
             modelBuilder.Entity("Sportarr.Api.Models.League", b =>
                 {
+                    b.HasOne("Sportarr.Api.Models.RootFolder", null)
+                        .WithMany()
+                        .HasForeignKey("RootFolderId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.Navigation("MonitoredTeams");
                 });
 #pragma warning restore 612, 618
