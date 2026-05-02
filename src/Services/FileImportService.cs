@@ -26,6 +26,26 @@ public class IndexerFailDownloadException : Exception
 }
 
 /// <summary>
+/// Thrown by the import path when the download client itself signaled
+/// the download as failed — typically by leaving the folder named with
+/// a "working folder" prefix like _FAILED_ or _UNPACK_ (SABnzbd's
+/// post-processing failure marker; matched against
+/// Config.DownloadClientWorkingFolders). Without this guard, an
+/// unpack-failed SAB download would keep getting re-grabbed forever —
+/// the import retries 3× into the empty FAILED folder, the release
+/// never lands on the blocklist, and the next RSS sync grabs the same
+/// broken NZB. Catching this in the monitor pins to Failed on the
+/// first attempt so HandleFailedDownload's existing blocklist + retry
+/// search runs.
+/// </summary>
+public class DownloadFailedException : Exception
+{
+    public DownloadFailedException(string message) : base(message)
+    {
+    }
+}
+
+/// <summary>
 /// Handles importing downloaded media files into the library
 /// </summary>
 public class FileImportService : IFileImportService
@@ -156,6 +176,22 @@ public class FileImportService : IFileImportService
                     "SOLUTION 1 (Preferred): Ensure Docker volume mappings are consistent between download client and Sportarr. " +
                     "SOLUTION 2: If paths differ between containers, configure Remote Path Mapping in Settings > Download Clients.");
             }
+
+            // Defense-in-depth check for download-client-flagged failures.
+            // SABnzbd renames a folder to _FAILED_<original> when post-
+            // processing (par2 repair, unpack, post-script, etc.) fails,
+            // but its history record may still report status="completed"
+            // — so the import path can reach this point on a download
+            // that has nothing to import. Walking the empty folder, hitting
+            // "no video files," and bumping ImportRetryCount to 3 just
+            // wastes the retry budget and never blocklists, so the next
+            // RSS sync re-grabs the same broken NZB. Detect the prefix
+            // here and throw the typed exception so the monitor pins the
+            // download to Failed on the first attempt and the existing
+            // HandleFailedDownload status-transition path adds the
+            // blocklist entry. Prefix list is configurable via
+            // Config.DownloadClientWorkingFolders.
+            CheckDownloadClientWorkingFolderPrefix(downloadPath);
 
             // FailDownloads policy check. Walk every file in the download
             // folder and check its extension against the indexer's
@@ -502,6 +538,42 @@ public class FileImportService : IFileImportService
     }
 
     /// <summary>
+    /// <summary>
+    /// Refuse to import any path whose final segment starts with a
+    /// download-client "working folder" prefix (defaults to _UNPACK_ /
+    /// _FAILED_, configurable via Config.DownloadClientWorkingFolders).
+    /// Catches the SABnzbd post-processing-failure case where the
+    /// history reports completed but the folder was renamed to
+    /// _FAILED_<original> with nothing inside. Cheaper than waiting
+    /// for the missing-video-files exception, and crucially throws the
+    /// typed DownloadFailedException so the monitor's catch routes
+    /// straight to Failed without burning the retry budget.
+    /// </summary>
+    private void CheckDownloadClientWorkingFolderPrefix(string downloadPath)
+    {
+        var basename = Path.GetFileName(downloadPath.TrimEnd(Path.DirectorySeparatorChar, '/'));
+        if (string.IsNullOrEmpty(basename)) return;
+
+        // Pull the configured prefix list; fall back to the default if
+        // the user wiped the field. Comma-separated, whitespace-trimmed.
+        var raw = _configService.GetConfigAsync().GetAwaiter().GetResult().DownloadClientWorkingFolders ?? "_UNPACK_,_FAILED_";
+        var prefixes = raw
+            .Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(p => p.Trim())
+            .Where(p => p.Length > 0)
+            .ToList();
+
+        foreach (var prefix in prefixes)
+        {
+            if (basename.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new DownloadFailedException(
+                    $"Download client marked the folder as failed (prefix '{prefix}' on '{basename}'). " +
+                    "Treating as a failed download — adding the release to the blocklist and triggering a replacement search.");
+            }
+        }
+    }
+
     /// <summary>
     /// Scan the download folder for files whose extension matches a
     /// category the indexer's FailDownloads policy says should fail the

@@ -585,6 +585,23 @@ public class EnhancedDownloadMonitorService : BackgroundService
             download.Status = DownloadStatus.Failed;
             download.ErrorMessage = ex.Message;
         }
+        catch (DownloadFailedException ex)
+        {
+            // The download client itself flagged this as failed (e.g.
+            // SAB renamed the folder _FAILED_<x> after a par2/unpack
+            // post-processing failure). Same routing as the
+            // FailDownloads policy match: skip retries and pin to
+            // Failed so HandleFailedDownload's status-transition path
+            // blocklists the release and schedules a re-search. Without
+            // this branch the import would re-attempt 3× into an empty
+            // folder, never blocklist, and the next RSS sync would
+            // re-grab the same broken NZB indefinitely.
+            _logger.LogWarning(
+                "[Enhanced Download Monitor] ✗ Download client reported failure for {Title}: {Message}",
+                download.Title, ex.Message);
+            download.Status = DownloadStatus.Failed;
+            download.ErrorMessage = ex.Message;
+        }
         catch (Exception ex)
         {
             download.ImportRetryCount = (download.ImportRetryCount ?? 0) + 1;

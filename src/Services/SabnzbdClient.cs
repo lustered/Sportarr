@@ -597,18 +597,38 @@ public class SabnzbdClient
                     };
                 }
 
-                // Handle failed downloads - distinguish between download failures and post-processing failures
+                // Handle failed downloads. Three buckets:
+                //  - Repair failure (par2/blocks): files are incomplete,
+                //    real failure, no usable data on disk.
+                //  - Unpack/move failure: SAB couldn't extract the archive
+                //    or move the result, so the destination folder is
+                //    empty (or renamed _FAILED_<x>). Real failure — was
+                //    previously misclassified as a post-processing
+                //    "warning" and import would re-attempt 3× into the
+                //    empty folder, never blocklist, and the next RSS
+                //    sync would re-grab the same broken NZB.
+                //  - Post-processing script failure: download succeeded,
+                //    only the user-script bit failed — files are intact,
+                //    safe to attempt import.
                 if (reportedStatus == "failed")
                 {
                     var failMessage = historyItem.fail_message?.ToLowerInvariant() ?? "";
 
-                    // CRITICAL: Repair failures are REAL failures - do NOT import these
-                    // PAR2 repair fails when there aren't enough recovery blocks to reconstruct missing data
-                    // The files are incomplete/corrupted and should NOT be imported
                     var isRepairFailure =
                         failMessage.Contains("repair") ||
                         failMessage.Contains("par2") ||
                         failMessage.Contains("blocks");
+
+                    var isUnpackOrMoveFailure =
+                        failMessage.Contains("unpacking failed") ||
+                        failMessage.Contains("unpack failed") ||
+                        failMessage.Contains("moving failed");
+
+                    var isPostProcessingScriptFailure =
+                        !isRepairFailure && !isUnpackOrMoveFailure &&
+                        (failMessage.Contains("post") ||
+                         failMessage.Contains("script") ||
+                         failMessage.Contains("aborted"));
 
                     if (isRepairFailure)
                     {
@@ -617,32 +637,29 @@ public class SabnzbdClient
                         status = "failed";
                         errorMessage = historyItem.fail_message ?? "Repair failed - files are incomplete";
                     }
+                    else if (isUnpackOrMoveFailure)
+                    {
+                        _logger.LogError("[SABnzbd] Download {NzoId} UNPACK/MOVE FAILED: {FailMessage}. Destination folder is empty - NOT importing.",
+                            nzoId, historyItem.fail_message);
+                        status = "failed";
+                        errorMessage = historyItem.fail_message ?? "Unpack failed - no files to import";
+                    }
+                    else if (isPostProcessingScriptFailure)
+                    {
+                        // Only the user post-processing script failed —
+                        // the actual download + unpack succeeded, so the
+                        // files are sitting in the destination intact.
+                        _logger.LogWarning("[SABnzbd] Download {NzoId} completed but post-processing script failed: {FailMessage}. Will attempt import anyway.",
+                            nzoId, historyItem.fail_message);
+                        status = "completed";
+                        errorMessage = $"Post-processing warning: {historyItem.fail_message}";
+                    }
                     else
                     {
-                        // Post-processing script failures should not prevent import.
-                        // SABnzbd marks download as "failed" even if download succeeded but post-processing script failed
-                        var isPostProcessingFailure =
-                            failMessage.Contains("post") ||
-                            failMessage.Contains("script") ||
-                            failMessage.Contains("aborted") ||
-                            failMessage.Contains("moving failed") ||
-                            failMessage.Contains("unpacking failed");
-
-                        if (isPostProcessingFailure)
-                        {
-                            // Download succeeded, only post-processing failed - treat as warning, not failure
-                            _logger.LogWarning("[SABnzbd] Download {NzoId} completed but post-processing failed: {FailMessage}. Will attempt import anyway.",
-                                nzoId, historyItem.fail_message);
-                            status = "completed"; // Override to completed so import can proceed
-                            errorMessage = $"Post-processing warning: {historyItem.fail_message}";
-                        }
-                        else
-                        {
-                            // Other download failures (network, missing files on server, etc.)
-                            _logger.LogError("[SABnzbd] Download {NzoId} failed: {FailMessage}", nzoId, historyItem.fail_message);
-                            status = "failed";
-                            errorMessage = historyItem.fail_message ?? "Download failed";
-                        }
+                        // Other download failures (network, missing files on server, etc.)
+                        _logger.LogError("[SABnzbd] Download {NzoId} failed: {FailMessage}", nzoId, historyItem.fail_message);
+                        status = "failed";
+                        errorMessage = historyItem.fail_message ?? "Download failed";
                     }
                 }
 
