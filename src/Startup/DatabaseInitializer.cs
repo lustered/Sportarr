@@ -155,6 +155,43 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify Leagues.RootFolderId column: {ex.Message}");
         }
 
+        // Ensure the plain-RSS indexer columns exist on Indexers. Added so
+        // the Generic Torrent RSS Feed indexer type can persist its
+        // auto-detected parser config (size source, ezRSS format flag,
+        // enclosure-URL preference, etc.) and an optional cookie. Eight
+        // columns; we add them in one block per pragma_table_info pattern
+        // so legacy EnsureCreated databases pick them up at the next start.
+        try
+        {
+            var rssCols = new (string Name, string Type, string Default)[]
+            {
+                ("Cookie",                          "TEXT",    ""),
+                ("RssAllowZeroSize",                "INTEGER", "0"),
+                ("RssUseEzrssFormat",               "INTEGER", "0"),
+                ("RssUseEnclosureUrl",              "INTEGER", "1"),
+                ("RssUseEnclosureLength",           "INTEGER", "1"),
+                ("RssParseSizeInDescription",       "INTEGER", "0"),
+                ("RssParseSeedersInDescription",    "INTEGER", "0"),
+                ("RssSizeElementName",              "TEXT",    ""),
+            };
+            foreach (var col in rssCols)
+            {
+                var checkSql = $"SELECT COUNT(*) FROM pragma_table_info('Indexers') WHERE name='{col.Name}'";
+                var exists = db.Database.SqlQueryRaw<int>(checkSql).AsEnumerable().FirstOrDefault();
+                if (exists == 0)
+                {
+                    var defaultClause = col.Type == "TEXT" ? "" : $" NOT NULL DEFAULT {col.Default}";
+                    Console.WriteLine($"[Sportarr] Indexers.{col.Name} column missing - adding it now...");
+                    db.Database.ExecuteSqlRaw($"ALTER TABLE Indexers ADD COLUMN {col.Name} {col.Type}{defaultClause}");
+                    Console.WriteLine($"[Sportarr] Indexers.{col.Name} column added successfully");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not verify Indexers RSS columns: {ex.Message}");
+        }
+
         // Drop the legacy persisted live-state columns from RootFolders.
         // These were previously persisted (Accessible / FreeSpace / TotalSpace
         // / LastChecked) but Phase 3 of the root-folders rework moved them to

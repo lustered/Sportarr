@@ -35,6 +35,8 @@ interface Indexer {
   rejectBlocklistedTorrentHashes?: boolean;
   downloadClientId?: number;
   tags?: number[];
+  cookie?: string;
+  allowZeroSize?: boolean;
 }
 
 type IndexerTemplate = {
@@ -87,6 +89,18 @@ const indexerTemplates: IndexerTemplate[] = [
     protocol: 'torrent',
     description: 'FileList - Torznab compatible indexer',
     fields: ['baseUrl', 'apiKey', 'categories', 'minimumSeeders', 'seedRatio', 'seedTime']
+  },
+  {
+    // Plain RSS feed: search isn't supported (the feed has no ?q=
+    // parameter), so this indexer type only contributes via the
+    // periodic RSS sync. The Test action runs the auto-detector and
+    // populates the parser config (ezRSS / enclosure / size source)
+    // before saving — the user just pastes the URL.
+    name: 'Generic Torrent RSS Feed',
+    implementation: 'Rss',
+    protocol: 'torrent',
+    description: 'Plain RSS 2.0 feed (poll-only, no on-demand search). Use this for sites with an RSS feed but no Torznab/Newznab API.',
+    fields: ['baseUrl', 'cookie', 'minimumSeeders', 'allowZeroSize']
   }
 ];
 
@@ -133,13 +147,15 @@ export default function IndexersSettings() {
       const multiLanguages = getField('multiLanguages') as string;
       const rejectBlocklistedTorrentHashes = getField('rejectBlocklistedTorrentHashes') as string;
       const downloadClientId = getField('downloadClientId') as string;
+      const cookie = getField('cookie') as string;
+      const allowZeroSize = getField('allowZeroSize') as string;
       // Tags come as a top-level property from the API, not from fields
       const apiTags = indexer.tags;
 
       // Determine protocol based on implementation type
-      // Torrent implementations: Torznab, Torrent, Nyaa, TorrentLeech, IPTorrents, FileList
-      // Usenet implementations: Newznab, Rss
-      const isTorrent = ['Torznab', 'Torrent', 'Nyaa', 'TorrentLeech', 'IPTorrents', 'FileList']
+      // Torrent implementations: Torznab, Torrent, Nyaa, TorrentLeech, IPTorrents, FileList, Rss
+      // Usenet implementations: Newznab
+      const isTorrent = ['Torznab', 'Torrent', 'Nyaa', 'TorrentLeech', 'IPTorrents', 'FileList', 'Rss']
         .some(impl => indexer.implementation.toLowerCase().includes(impl.toLowerCase()));
 
       return {
@@ -166,6 +182,8 @@ export default function IndexersSettings() {
         multiLanguages: multiLanguages ? multiLanguages.split(',').map(l => l.trim()) : undefined,
         rejectBlocklistedTorrentHashes: rejectBlocklistedTorrentHashes ? rejectBlocklistedTorrentHashes === 'true' : true,
         downloadClientId: downloadClientId ? parseInt(downloadClientId, 10) : undefined,
+        cookie: cookie || undefined,
+        allowZeroSize: allowZeroSize === 'true',
         tags: apiTags || []
       };
     });
@@ -340,14 +358,26 @@ export default function IndexersSettings() {
     if (indexer.downloadClientId !== undefined) {
       fields.push({ name: 'downloadClientId', value: String(indexer.downloadClientId) });
     }
+    // RSS-specific fields. Always emit when set so the backend can clear
+    // them by sending an empty string.
+    if (indexer.cookie !== undefined && indexer.cookie !== null) {
+      fields.push({ name: 'cookie', value: indexer.cookie });
+    }
+    if (indexer.allowZeroSize !== undefined) {
+      fields.push({ name: 'allowZeroSize', value: String(indexer.allowZeroSize) });
+    }
+    // Plain RSS indexers can't satisfy a search — force the two
+    // search-enable flags off in the request so the UI doesn't show
+    // them as enabled while the backend silently rejects them.
+    const isRss = (indexer.implementation || '').toLowerCase() === 'rss';
     return {
       id: indexer.id,
       name: indexer.name || '',
       implementation: indexer.implementation || 'Torznab',
       enable: indexer.enabled ?? true,
       enableRss: indexer.enableRss ?? true,
-      enableAutomaticSearch: indexer.enableAutomaticSearch ?? true,
-      enableInteractiveSearch: indexer.enableInteractiveSearch ?? true,
+      enableAutomaticSearch: isRss ? false : (indexer.enableAutomaticSearch ?? true),
+      enableInteractiveSearch: isRss ? false : (indexer.enableInteractiveSearch ?? true),
       priority: indexer.priority || 25,
       fields,
       tags: indexer.tags || [],
@@ -603,6 +633,44 @@ export default function IndexersSettings() {
                 API path for the indexer (usually /api for Newznab/Torznab)
               </p>
             </div>
+          </div>
+        )}
+
+        {/* RSS-specific fields. Cookie supports protected feeds; AllowZeroSize
+            is needed for feeds whose RSS doesn't expose size at all. */}
+        {hasField('cookie') && (
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-2">Cookie (optional)</label>
+            <input
+              type="text"
+              value={formData.cookie || ''}
+              onChange={(e) => handleFormChange('cookie', e.target.value)}
+              className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-red-600"
+              placeholder="key=value; key2=value2"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Required for protected feeds; leave empty otherwise.
+            </p>
+          </div>
+        )}
+
+        {hasField('allowZeroSize') && (
+          <label className="flex items-center space-x-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={formData.allowZeroSize || false}
+              onChange={(e) => handleFormChange('allowZeroSize', e.target.checked)}
+              className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-red-600 focus:ring-red-600"
+            />
+            <span className="text-sm font-medium text-gray-300">Allow zero-size releases</span>
+          </label>
+        )}
+
+        {/* Plain RSS notice — clarify the feature limit before the user
+            wonders why Manual Search never picks this indexer up. */}
+        {formData.implementation === 'Rss' && (
+          <div className="p-3 bg-yellow-900/30 border border-yellow-700/40 rounded-lg text-sm text-yellow-200">
+            <strong>RSS-only indexer:</strong> plain RSS feeds don't accept search queries, so this indexer only contributes during the periodic RSS sync. Manual / automatic searches will skip it.
           </div>
         )}
 

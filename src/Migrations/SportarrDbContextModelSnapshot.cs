@@ -1639,6 +1639,9 @@ namespace Sportarr.Api.Migrations
                         .IsRequired()
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("Cookie")
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime>("Created")
                         .HasColumnType("TEXT");
 
@@ -1687,6 +1690,28 @@ namespace Sportarr.Api.Migrations
                         .HasColumnType("INTEGER");
 
                     b.Property<int>("RequestDelayMs")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("RssAllowZeroSize")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("RssParseSeedersInDescription")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("RssParseSizeInDescription")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("RssSizeElementName")
+                        .HasMaxLength(50)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("RssUseEnclosureLength")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("RssUseEnclosureUrl")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<bool>("RssUseEzrssFormat")
                         .HasColumnType("INTEGER");
 
                     b.Property<int?>("SeasonPackSeedTime")
