@@ -95,12 +95,18 @@ const indexerTemplates: IndexerTemplate[] = [
     // parameter), so this indexer type only contributes via the
     // periodic RSS sync. The Test action runs the auto-detector and
     // populates the parser config (ezRSS / enclosure / size source)
-    // before saving — the user just pastes the URL.
+    // before saving — the user just pastes the URL. Field set
+    // mirrors the upstream Torrent RSS Feed indexer's exposed
+    // settings (BaseUrl, Cookie, AllowZeroSize, MinimumSeeders,
+    // SeedCriteria) plus the shared advanced fields (Reject
+    // Blocklisted Torrent Hashes, Season-Pack Seed Time, Multi
+    // Languages) that auto-render in advanced mode for any torrent
+    // indexer.
     name: 'Generic Torrent RSS Feed',
     implementation: 'Rss',
     protocol: 'torrent',
     description: 'Plain RSS 2.0 feed (poll-only, no on-demand search). Use this for sites with an RSS feed but no Torznab/Newznab API.',
-    fields: ['baseUrl', 'cookie', 'minimumSeeders', 'allowZeroSize']
+    fields: ['baseUrl', 'cookie', 'minimumSeeders', 'allowZeroSize', 'seedRatio', 'seedTime']
   }
 ];
 
@@ -486,13 +492,21 @@ export default function IndexersSettings() {
       const apiIndexer = toApiFormat(indexer);
 
       const response = await apiClient.post('/indexer/test', apiIndexer);
+      const successMessage = response.data?.message || 'Connection successful!';
       setTestResult({
         success: true,
-        message: response.data?.message || 'Connection successful!'
+        message: successMessage,
       });
 
+      // For plain-RSS indexers the backend's response message contains
+      // the auto-detected parser variant (e.g. "Detected ezRSS" or
+      // "Detected generic RSS — URL: enclosure, Size: parsed from
+      // <description>"). Surface it so the user can verify the
+      // detection picked the right shape before saving.
       toast.success('Test Successful', {
-        description: `Successfully connected to ${indexer.name || 'indexer'}`,
+        description: successMessage.startsWith('Detected')
+          ? successMessage
+          : `Successfully connected to ${indexer.name || 'indexer'}`,
       });
     } catch (error: any) {
       console.error('Test failed:', error);
