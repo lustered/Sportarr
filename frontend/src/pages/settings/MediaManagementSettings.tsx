@@ -117,6 +117,10 @@ const SPORT_TYPES = [
 export default function MediaManagementSettings({ showAdvanced: propShowAdvanced = false }: MediaManagementSettingsProps) {
   const queryClient = useQueryClient();
   const [rootFolders, setRootFolders] = useState<RootFolder[]>([]);
+  // Per-root cache for the unmapped-folders endpoint. The list is opt-in
+  // so we don't walk the disk unsolicited every time the user opens the
+  // Settings page.
+  const [unmappedByRoot, setUnmappedByRoot] = useState<Record<number, { loading: boolean; folders: { name: string; path: string }[]; error?: string; expanded: boolean }>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showAddFolderModal, setShowAddFolderModal] = useState(false);
@@ -662,6 +666,42 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
   // Note: In-app navigation blocking would require React Router's unstable_useBlocker
   // For now, we only block browser refresh/close via the useUnsavedChanges hook
 
+  // Toggle the Unmapped Folders panel for a given root folder. First open
+  // fetches the list lazily; subsequent opens reuse the cached result.
+  const toggleUnmapped = async (folderId: number) => {
+    const current = unmappedByRoot[folderId];
+    if (current?.expanded) {
+      setUnmappedByRoot(prev => ({ ...prev, [folderId]: { ...current, expanded: false } }));
+      return;
+    }
+    if (current?.folders) {
+      setUnmappedByRoot(prev => ({ ...prev, [folderId]: { ...current, expanded: true } }));
+      return;
+    }
+    setUnmappedByRoot(prev => ({ ...prev, [folderId]: { loading: true, folders: [], expanded: true } }));
+    try {
+      const response = await apiGet(`/api/rootfolder/${folderId}/unmappedfolders`);
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        setUnmappedByRoot(prev => ({
+          ...prev,
+          [folderId]: { loading: false, folders: [], expanded: true, error: err?.error ?? `HTTP ${response.status}` },
+        }));
+        return;
+      }
+      const body = await response.json();
+      setUnmappedByRoot(prev => ({
+        ...prev,
+        [folderId]: { loading: false, folders: body?.unmapped ?? [], expanded: true },
+      }));
+    } catch (err) {
+      setUnmappedByRoot(prev => ({
+        ...prev,
+        [folderId]: { loading: false, folders: [], expanded: true, error: (err as Error).message ?? 'Failed to load' },
+      }));
+    }
+  };
+
   return (
     <div>
       <SettingsHeader
@@ -702,35 +742,81 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
         </p>
 
         <div className="space-y-2">
-          {rootFolders.map((folder) => (
-            <div
-              key={folder.id}
-              className="flex items-center justify-between p-4 bg-black/30 rounded-lg border border-gray-800"
-            >
-              <div className="flex items-center flex-1">
-                <FolderIcon className="w-5 h-5 text-red-400 mr-3" />
-                <div className="flex-1">
-                  <p className="text-white font-medium">{folder.path}</p>
-                  <p className="text-sm text-gray-400">
-                    Free Space: {formatBytes(folder.freeSpace)}
-                  </p>
+          {rootFolders.map((folder) => {
+            const unmappedState = unmappedByRoot[folder.id];
+            return (
+              <div
+                key={folder.id}
+                className="bg-black/30 rounded-lg border border-gray-800"
+              >
+                <div className="flex items-center justify-between p-4">
+                  <div className="flex items-center flex-1 min-w-0">
+                    <FolderIcon className="w-5 h-5 text-red-400 mr-3 flex-shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white font-medium truncate">{folder.path}</p>
+                      <p className="text-sm text-gray-400">
+                        Free Space: {formatBytes(folder.freeSpace)}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center space-x-3 flex-shrink-0">
+                    {folder.accessible ? (
+                      <CheckIcon className="w-5 h-5 text-green-500" />
+                    ) : (
+                      <XMarkIcon className="w-5 h-5 text-red-500" />
+                    )}
+                    <button
+                      onClick={() => toggleUnmapped(folder.id)}
+                      disabled={!folder.accessible}
+                      className="text-gray-400 hover:text-white text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      title={folder.accessible ? 'Show subfolders not yet mapped to a league' : 'Folder is not accessible'}
+                    >
+                      {unmappedState?.expanded ? 'Hide unmapped' : 'Show unmapped'}
+                    </button>
+                    <button
+                      onClick={() => setShowDeleteConfirm(folder.id)}
+                      className="text-gray-400 hover:text-red-400 text-sm transition-colors"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-center space-x-3">
-                {folder.accessible ? (
-                  <CheckIcon className="w-5 h-5 text-green-500" />
-                ) : (
-                  <XMarkIcon className="w-5 h-5 text-red-500" />
+                {unmappedState?.expanded && (
+                  <div className="px-4 pb-4 border-t border-gray-800/60 pt-3">
+                    {unmappedState.loading ? (
+                      <p className="text-sm text-gray-400">Scanning…</p>
+                    ) : unmappedState.error ? (
+                      <p className="text-sm text-red-400">{unmappedState.error}</p>
+                    ) : unmappedState.folders.length === 0 ? (
+                      <p className="text-sm text-gray-500">No unmapped subfolders — every directory under this root matches an existing league.</p>
+                    ) : (
+                      <>
+                        <p className="text-xs text-gray-500 mb-2">
+                          {unmappedState.folders.length} subfolder{unmappedState.folders.length === 1 ? '' : 's'} not currently associated with a league. Use Library Import to adopt them.
+                        </p>
+                        <ul className="divide-y divide-gray-800/60">
+                          {unmappedState.folders.map(uf => (
+                            <li key={uf.path} className="flex items-center justify-between py-2">
+                              <div className="flex items-center min-w-0 flex-1">
+                                <FolderIcon className="w-4 h-4 text-yellow-500 mr-2 flex-shrink-0" />
+                                <span className="text-sm text-gray-200 truncate" title={uf.path}>{uf.name}</span>
+                              </div>
+                              <a
+                                href={`/library-import?path=${encodeURIComponent(uf.path)}`}
+                                className="px-2 py-1 text-xs bg-red-600/80 hover:bg-red-600 text-white rounded transition-colors flex-shrink-0 ml-3"
+                              >
+                                Library Import
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      </>
+                    )}
+                  </div>
                 )}
-                <button
-                  onClick={() => setShowDeleteConfirm(folder.id)}
-                  className="text-gray-400 hover:text-red-400 text-sm transition-colors"
-                >
-                  Delete
-                </button>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         {rootFolders.length === 0 && (

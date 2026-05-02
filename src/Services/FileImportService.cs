@@ -1504,23 +1504,16 @@ public class FileImportService : IFileImportService
         {
             _logger.LogInformation("Loaded {Count} root folders from database", rootFolders.Count);
 
-            // Re-check accessibility for each root folder (important for Docker path mapping changes)
-            foreach (var folder in rootFolders)
+            // Refresh Accessible/FreeSpace/TotalSpace from disk. The columns
+            // are no longer persisted (they only produced drift between row
+            // and reality), so the loaded entities arrive with defaults and
+            // we fill in the live values here.
+            _diskSpaceService.RefreshLiveState(rootFolders);
+
+            foreach (var folder in rootFolders.Where(rf => !rf.Accessible))
             {
-                var wasAccessible = folder.Accessible;
-                folder.Accessible = Directory.Exists(folder.Path);
-
-                if (wasAccessible && !folder.Accessible)
-                {
-                    _logger.LogWarning("Root folder is no longer accessible: {Path}. " +
-                        "If using Docker, check volume mappings match between download client and Sportarr.", folder.Path);
-                }
-                else if (!wasAccessible && folder.Accessible)
-                {
-                    _logger.LogInformation("Root folder is now accessible: {Path}", folder.Path);
-                }
-
-                _logger.LogDebug("Root folder: {Path} - Accessible: {Accessible}", folder.Path, folder.Accessible);
+                _logger.LogWarning("Root folder is not accessible: {Path}. " +
+                    "If using Docker, check volume mappings match between download client and Sportarr.", folder.Path);
             }
 
             var accessibleCount = rootFolders.Count(rf => rf.Accessible);

@@ -3262,25 +3262,13 @@ namespace Sportarr.Api.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("INTEGER");
 
-                    b.Property<bool>("Accessible")
-                        .HasColumnType("INTEGER");
-
                     b.Property<DateTime>("Created")
-                        .HasColumnType("TEXT");
-
-                    b.Property<long>("FreeSpace")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<DateTime>("LastChecked")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("Path")
                         .IsRequired()
                         .HasMaxLength(500)
                         .HasColumnType("TEXT");
-
-                    b.Property<long>("TotalSpace")
-                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 

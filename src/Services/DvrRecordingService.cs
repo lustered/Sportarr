@@ -16,6 +16,7 @@ public class DvrRecordingService
     private readonly IptvSourceService _iptvService;
     private readonly ConfigService _configService;
     private readonly FileNamingService _namingService;
+    private readonly DiskSpaceService _diskSpaceService;
 
     public DvrRecordingService(
         ILogger<DvrRecordingService> logger,
@@ -23,7 +24,8 @@ public class DvrRecordingService
         FFmpegRecorderService ffmpegRecorder,
         IptvSourceService iptvService,
         ConfigService configService,
-        FileNamingService namingService)
+        FileNamingService namingService,
+        DiskSpaceService diskSpaceService)
     {
         _logger = logger;
         _db = db;
@@ -31,6 +33,7 @@ public class DvrRecordingService
         _iptvService = iptvService;
         _configService = configService;
         _namingService = namingService;
+        _diskSpaceService = diskSpaceService;
     }
 
     // ============================================================================
@@ -633,10 +636,7 @@ public class DvrRecordingService
         var rootFolders = await _db.RootFolders.ToListAsync();
         if (rootFolders.Any())
         {
-            foreach (var folder in rootFolders)
-            {
-                folder.Accessible = Directory.Exists(folder.Path);
-            }
+            _diskSpaceService.RefreshLiveState(rootFolders);
             settings.RootFolders = rootFolders;
         }
 

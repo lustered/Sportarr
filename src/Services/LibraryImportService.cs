@@ -19,6 +19,7 @@ public class LibraryImportService
     private readonly EventPartDetector _partDetector;
     private readonly ConfigService _configService;
     private readonly SportarrApiClient _sportarrApiClient;
+    private readonly DiskSpaceService _diskSpaceService;
 
     private static readonly string[] VideoExtensions = SupportedExtensions.Video;
 
@@ -30,7 +31,8 @@ public class LibraryImportService
         FileNamingService namingService,
         EventPartDetector partDetector,
         ConfigService configService,
-        SportarrApiClient sportarrApiClient)
+        SportarrApiClient sportarrApiClient,
+        DiskSpaceService diskSpaceService)
     {
         _db = db;
         _logger = logger;
@@ -40,6 +42,7 @@ public class LibraryImportService
         _partDetector = partDetector;
         _configService = configService;
         _sportarrApiClient = sportarrApiClient;
+        _diskSpaceService = diskSpaceService;
     }
 
     /// <summary>
@@ -1011,10 +1014,7 @@ public class LibraryImportService
         var rootFolders = await _db.RootFolders.ToListAsync();
         if (rootFolders.Any())
         {
-            foreach (var folder in rootFolders)
-            {
-                folder.Accessible = Directory.Exists(folder.Path);
-            }
+            _diskSpaceService.RefreshLiveState(rootFolders);
             settings.RootFolders = rootFolders;
         }
 

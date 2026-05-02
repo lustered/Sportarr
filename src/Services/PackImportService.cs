@@ -1007,10 +1007,7 @@ public class PackImportService
         var rootFolders = await _db.RootFolders.ToListAsync();
         if (rootFolders.Any())
         {
-            foreach (var folder in rootFolders)
-            {
-                folder.Accessible = Directory.Exists(folder.Path);
-            }
+            _diskSpaceService.RefreshLiveState(rootFolders);
             settings.RootFolders = rootFolders;
         }
 

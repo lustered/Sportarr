@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Sportarr.Api.Data;
+using Sportarr.Api.Helpers;
 using Sportarr.Api.Services;
 using Sportarr.Api.Models;
 
@@ -16,40 +17,154 @@ public static class RootFolderAndNotificationEndpoints
 app.MapGet("/api/rootfolder", async (SportarrDbContext db, DiskSpaceService diskSpaceService) =>
 {
     var folders = await db.RootFolders.ToListAsync();
-
-    // Update disk space info for each folder using DiskSpaceService (handles Docker volumes correctly)
-    foreach (var folder in folders)
-    {
-        folder.Accessible = Directory.Exists(folder.Path);
-        if (folder.Accessible)
-        {
-            folder.FreeSpace = diskSpaceService.GetAvailableSpace(folder.Path) ?? 0;
-        }
-        folder.LastChecked = DateTime.UtcNow;
-    }
-
+    // Accessible/FreeSpace/TotalSpace are NotMapped — populate them live
+    // here so the UI shows current numbers instead of whatever the row
+    // had when it was last read.
+    diskSpaceService.RefreshLiveState(folders);
     return Results.Ok(folders);
 });
 
-app.MapPost("/api/rootfolder", async (RootFolder folder, SportarrDbContext db, DiskSpaceService diskSpaceService) =>
+app.MapPost("/api/rootfolder", async (RootFolder folder, SportarrDbContext db, DiskSpaceService diskSpaceService, ILogger<Program> logger) =>
 {
-    // Check if folder path already exists
+    if (folder == null || string.IsNullOrWhiteSpace(folder.Path))
+    {
+        return Results.BadRequest(new { error = "Path is required" });
+    }
+
+    // Normalize to a canonical absolute path so we don't accept the same
+    // folder twice via different spellings (./media vs /data/media etc).
+    string normalized;
+    try
+    {
+        normalized = Path.GetFullPath(folder.Path);
+    }
+    catch (Exception ex)
+    {
+        return Results.BadRequest(new { error = $"Invalid path: {ex.Message}" });
+    }
+    folder.Path = normalized;
+
     if (await db.RootFolders.AnyAsync(f => f.Path == folder.Path))
     {
         return Results.BadRequest(new { error = "Root folder already exists" });
     }
 
-    // Check folder accessibility and get disk space using DiskSpaceService (handles Docker volumes correctly)
-    folder.Accessible = Directory.Exists(folder.Path);
-    if (folder.Accessible)
+    var validation = RootFolderValidator.Validate(folder.Path);
+    if (!validation.IsValid)
     {
-        folder.FreeSpace = diskSpaceService.GetAvailableSpace(folder.Path) ?? 0;
+        logger.LogInformation("[ROOTFOLDER] Rejected {Path}: {Reason}", folder.Path, validation.Reason);
+        return Results.BadRequest(new { error = validation.Reason });
     }
-    folder.LastChecked = DateTime.UtcNow;
 
     db.RootFolders.Add(folder);
     await db.SaveChangesAsync();
+
+    // Populate live state on the response so the client doesn't need to
+    // round-trip through GET to display free space.
+    diskSpaceService.RefreshLiveState(new[] { folder });
     return Results.Created($"/api/rootfolder/{folder.Id}", folder);
+});
+
+// GET /api/rootfolder/{id}/unmappedfolders — list direct subfolders
+// of the given root that don't correspond to any existing league. The
+// upstream library-import flow uses this to surface "you have stuff
+// on disk Sportarr doesn't know about" candidates so the user can
+// adopt them in one click instead of hand-typing the path. Filesystem
+// metadata folders (recycle bins, system volume info, lost+found) are
+// always excluded.
+app.MapGet("/api/rootfolder/{id:int}/unmappedfolders", async (int id, SportarrDbContext db, ILogger<Program> logger) =>
+{
+    var folder = await db.RootFolders.FindAsync(id);
+    if (folder is null) return Results.NotFound();
+
+    if (!Directory.Exists(folder.Path))
+    {
+        return Results.Ok(new
+        {
+            rootFolderId = folder.Id,
+            rootFolderPath = folder.Path,
+            accessible = false,
+            unmapped = Array.Empty<object>(),
+        });
+    }
+
+    // Build the league-name set the user has claimed. We normalize on
+    // both sides (lowercase + strip illegal chars in the same way
+    // FileNamingService does) so a league called "UFC" matches a folder
+    // called "ufc/" or "UFC " etc. without false positives.
+    var leagueNames = await db.Leagues
+        .Select(l => l.Name)
+        .ToListAsync();
+    var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var name in leagueNames)
+    {
+        var normalized = NormalizeFolderName(name);
+        if (!string.IsNullOrEmpty(normalized))
+            claimed.Add(normalized);
+    }
+
+    var unmapped = new List<object>();
+    try
+    {
+        foreach (var sub in Directory.EnumerateDirectories(folder.Path))
+        {
+            var name = Path.GetFileName(sub);
+            if (string.IsNullOrEmpty(name)) continue;
+            if (IsExcludedSubfolder(name)) continue;
+            if (claimed.Contains(NormalizeFolderName(name))) continue;
+            unmapped.Add(new
+            {
+                name,
+                path = sub,
+                relativePath = name,
+            });
+        }
+    }
+    catch (Exception ex)
+    {
+        logger.LogWarning(ex, "[ROOTFOLDER] Failed to enumerate {Path} for unmapped folders", folder.Path);
+        return Results.Problem(detail: ex.Message, statusCode: 500, title: "Failed to enumerate root folder");
+    }
+
+    var sorted = unmapped
+        .Cast<dynamic>()
+        .OrderBy(u => (string)u.name, StringComparer.OrdinalIgnoreCase)
+        .ToList<object>();
+
+    return Results.Ok(new
+    {
+        rootFolderId = folder.Id,
+        rootFolderPath = folder.Path,
+        accessible = true,
+        unmapped = sorted,
+    });
+
+    static string NormalizeFolderName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "";
+        // Strip the same set of characters FileNamingService.CleanFileName
+        // strips, then lowercase + collapse internal whitespace so the
+        // comparison is invariant to user-driven naming variations.
+        var cleaned = new System.Text.StringBuilder(name.Length);
+        foreach (var ch in name)
+        {
+            if (ch == ':' || ch == '*' || ch == '?' || ch == '"' || ch == '<' || ch == '>' || ch == '|')
+                continue;
+            cleaned.Append(ch);
+        }
+        var s = cleaned.ToString().Trim().ToLowerInvariant();
+        return System.Text.RegularExpressions.Regex.Replace(s, @"\s+", " ");
+    }
+
+    static bool IsExcludedSubfolder(string name)
+    {
+        return name.Equals("$RECYCLE.BIN", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("System Volume Information", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("lost+found", StringComparison.Ordinal)
+            || name.Equals(".Trash", StringComparison.Ordinal)
+            || name.Equals(".Trashes", StringComparison.Ordinal)
+            || name.StartsWith(".", StringComparison.Ordinal);
+    }
 });
 
 app.MapDelete("/api/rootfolder/{id:int}", async (int id, bool? force, SportarrDbContext db, ILogger<Program> logger) =>

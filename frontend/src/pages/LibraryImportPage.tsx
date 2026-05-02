@@ -101,8 +101,15 @@ const LibraryImportPage: React.FC = () => {
   // Wizard step
   const [currentStep, setCurrentStep] = useState<WizardStep>('select');
 
-  // Folder selection
-  const [folderPath, setFolderPath] = useState('');
+  // Folder selection. Accept ?path= so the Unmapped Folders list under
+  // each root folder on the Settings page can deep-link straight into
+  // this wizard with the path pre-filled.
+  const initialPath = (() => {
+    if (typeof window === 'undefined') return '';
+    const params = new URLSearchParams(window.location.search);
+    return params.get('path') ?? '';
+  })();
+  const [folderPath, setFolderPath] = useState(initialPath);
   const [includeSubfolders, setIncludeSubfolders] = useState(true);
   const [showFileBrowser, setShowFileBrowser] = useState(false);
 

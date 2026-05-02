@@ -225,16 +225,26 @@ public class MediaManagementSettings
     public DateTime? LastModified { get; set; }
 }
 
-// Root Folder Model
+// Root Folder Model. Only Id, Path, and Created are persisted —
+// Accessible / FreeSpace / TotalSpace are recomputed live every time
+// the API is read so the UI can't show stale "200 GiB free" while the
+// disk is actually full. NotMapped on those keeps the JSON response
+// shape unchanged for callers but tells EF to ignore them on read /
+// write so we can't accidentally trust the persisted value.
 public class RootFolder
 {
     public int Id { get; set; }
     public required string Path { get; set; }
-    public bool Accessible { get; set; } = true;
-    public long FreeSpace { get; set; } = 0;
-    public long TotalSpace { get; set; } = 0;
     public DateTime Created { get; set; } = DateTime.UtcNow;
-    public DateTime LastChecked { get; set; } = DateTime.UtcNow;
+
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    public bool Accessible { get; set; } = true;
+
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    public long FreeSpace { get; set; } = 0;
+
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    public long TotalSpace { get; set; } = 0;
 }
 
 // Import History
