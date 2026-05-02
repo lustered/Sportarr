@@ -155,8 +155,10 @@ public class SportarrDbContext : DbContext
             // Restrict on delete: a RootFolder with bound leagues can't be
             // deleted via the cascade. The endpoint surfaces a 409 with the
             // offending league IDs (Phase 2) so the user has to either
-            // unbind or force the delete explicitly.
-            entity.HasOne<RootFolder>()
+            // unbind or force the delete explicitly. The navigation
+            // property on League now lets grab/import paths .Include the
+            // bound root folder for per-root default lookups (Phase 4).
+            entity.HasOne(l => l.RootFolder)
                   .WithMany()
                   .HasForeignKey(l => l.RootFolderId)
                   .OnDelete(DeleteBehavior.Restrict);

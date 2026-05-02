@@ -65,6 +65,31 @@ app.MapPost("/api/rootfolder", async (RootFolder folder, SportarrDbContext db, D
     return Results.Created($"/api/rootfolder/{folder.Id}", folder);
 });
 
+// PUT /api/rootfolder/{id} — update the editable fields on an existing
+// root folder. Currently the user-editable knobs are the per-root
+// defaults (DefaultQualityProfileId and DefaultDownloadClientCategory);
+// Path itself stays immutable because changing it would orphan every
+// FilePath stored under it. To change Path, the right answer is to add
+// a new root folder, run the league move flow, and delete the old one.
+app.MapPut("/api/rootfolder/{id:int}", async (int id, RootFolder updates, SportarrDbContext db, DiskSpaceService diskSpaceService, ILogger<Program> logger) =>
+{
+    var folder = await db.RootFolders.FindAsync(id);
+    if (folder is null) return Results.NotFound();
+    if (updates is null) return Results.BadRequest(new { error = "Body required" });
+
+    folder.DefaultQualityProfileId = updates.DefaultQualityProfileId;
+    folder.DefaultDownloadClientCategory = string.IsNullOrWhiteSpace(updates.DefaultDownloadClientCategory)
+        ? null
+        : updates.DefaultDownloadClientCategory.Trim();
+
+    await db.SaveChangesAsync();
+    logger.LogInformation("[ROOTFOLDER] Updated defaults for {Id} ({Path}) — profile={Profile}, category={Category}",
+        folder.Id, folder.Path, folder.DefaultQualityProfileId, folder.DefaultDownloadClientCategory ?? "(none)");
+
+    diskSpaceService.RefreshLiveState(new[] { folder });
+    return Results.Ok(folder);
+});
+
 // GET /api/rootfolder/{id}/unmappedfolders — list direct subfolders
 // of the given root that don't correspond to any existing league. The
 // upstream library-import flow uses this to surface "you have stuff

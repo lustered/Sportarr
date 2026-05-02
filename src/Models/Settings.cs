@@ -225,17 +225,39 @@ public class MediaManagementSettings
     public DateTime? LastModified { get; set; }
 }
 
-// Root Folder Model. Only Id, Path, and Created are persisted —
+// Root Folder Model. Only Id, Path, Created, and the optional
+// DefaultQualityProfileId / DefaultDownloadClientCategory are persisted —
 // Accessible / FreeSpace / TotalSpace are recomputed live every time
 // the API is read so the UI can't show stale "200 GiB free" while the
 // disk is actually full. NotMapped on those keeps the JSON response
 // shape unchanged for callers but tells EF to ignore them on read /
 // write so we can't accidentally trust the persisted value.
+//
+// The two Default* columns are a Sportarr-specific extension: users
+// often dedicate fast disks to current sports and archive disks to old
+// replays, so each root can hint a Quality Profile and a Download
+// Client category to apply to leagues bound under it. Both are
+// optional — leagues fall back to their explicit setting (or the
+// global default) when the root has nothing pinned.
 public class RootFolder
 {
     public int Id { get; set; }
     public required string Path { get; set; }
     public DateTime Created { get; set; } = DateTime.UtcNow;
+
+    /// <summary>
+    /// Optional default Quality Profile applied to leagues bound to this
+    /// root folder when the user doesn't pick one explicitly at add time.
+    /// </summary>
+    public int? DefaultQualityProfileId { get; set; }
+
+    /// <summary>
+    /// Optional download-client category override applied at grab time
+    /// for any event in a league bound to this root. When set, this
+    /// replaces the download client's configured Category for that grab.
+    /// </summary>
+    [System.ComponentModel.DataAnnotations.MaxLength(100)]
+    public string? DefaultDownloadClientCategory { get; set; }
 
     [System.ComponentModel.DataAnnotations.Schema.NotMapped]
     public bool Accessible { get; set; } = true;

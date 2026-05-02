@@ -110,6 +110,13 @@ public class League
     public int? RootFolderId { get; set; }
 
     /// <summary>
+    /// Navigation property to the bound RootFolder. Lets grab and import
+    /// services pull the per-root defaults (DefaultQualityProfileId,
+    /// DefaultDownloadClientCategory) without an extra round trip.
+    /// </summary>
+    public RootFolder? RootFolder { get; set; }
+
+    /// <summary>
     /// Automatically search for missing events when league is added or settings are updated
     /// This is a one-time search, not an ongoing background search
     /// </summary>

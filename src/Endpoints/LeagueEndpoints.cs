@@ -1150,18 +1150,23 @@ app.MapPost("/api/leagues", async (HttpContext context, SportarrDbContext db, IS
         // legacy behavior for older clients that don't yet send the field.
         var allRootFolders = await db.RootFolders.ToListAsync();
 
+        RootFolder? boundFolder = null;
         if (league.RootFolderId.HasValue)
         {
-            var bound = allRootFolders.FirstOrDefault(rf => rf.Id == league.RootFolderId.Value);
-            if (bound == null)
+            boundFolder = allRootFolders.FirstOrDefault(rf => rf.Id == league.RootFolderId.Value);
+            if (boundFolder == null)
             {
                 logger.LogWarning("[LEAGUES] Rejected: rootFolderId={Id} doesn't exist", league.RootFolderId.Value);
                 return Results.BadRequest(new { error = $"Root folder {league.RootFolderId.Value} does not exist." });
             }
-            if (!bound.Accessible)
+            // Re-check live accessibility — the persisted Accessible flag was
+            // dropped in Phase 3, but POST happens often enough that we
+            // verify directly here instead of doing a full RefreshLiveState
+            // for a single row.
+            if (!Directory.Exists(boundFolder.Path))
             {
-                logger.LogWarning("[LEAGUES] Rejected: rootFolderId={Id} ({Path}) is not accessible", bound.Id, bound.Path);
-                return Results.BadRequest(new { error = $"Root folder {bound.Path} is not accessible." });
+                logger.LogWarning("[LEAGUES] Rejected: rootFolderId={Id} ({Path}) is not accessible", boundFolder.Id, boundFolder.Path);
+                return Results.BadRequest(new { error = $"Root folder {boundFolder.Path} is not accessible." });
             }
         }
         else
@@ -1174,6 +1179,7 @@ app.MapPost("/api/leagues", async (HttpContext context, SportarrDbContext db, IS
             if (allRootFolders.Count == 1)
             {
                 league.RootFolderId = allRootFolders[0].Id;
+                boundFolder = allRootFolders[0];
                 logger.LogInformation("[LEAGUES] No root folder selected, defaulting to single configured folder: {Id} ({Path})",
                     allRootFolders[0].Id, allRootFolders[0].Path);
             }
@@ -1181,6 +1187,17 @@ app.MapPost("/api/leagues", async (HttpContext context, SportarrDbContext db, IS
             {
                 logger.LogInformation("[LEAGUES] No root folder selected and multiple configured — leaving RootFolderId null (legacy free-space fallback at import time)");
             }
+        }
+
+        // Phase 4 cascade: if the league didn't request an explicit Quality
+        // Profile but its bound root folder has one pinned, copy it down so
+        // the new league inherits the root's pin. The user can still
+        // override per league afterwards via the Edit modal.
+        if (!league.QualityProfileId.HasValue && boundFolder?.DefaultQualityProfileId is int rootDefaultProfile)
+        {
+            league.QualityProfileId = rootDefaultProfile;
+            logger.LogInformation("[LEAGUES] Inherited default Quality Profile {ProfileId} from root folder {RootId}",
+                rootDefaultProfile, boundFolder.Id);
         }
 
         // Added timestamp is already set in ToLeague()

@@ -3265,6 +3265,13 @@ namespace Sportarr.Api.Migrations
                     b.Property<DateTime>("Created")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("DefaultDownloadClientCategory")
+                        .HasMaxLength(100)
+                        .HasColumnType("TEXT");
+
+                    b.Property<int?>("DefaultQualityProfileId")
+                        .HasColumnType("INTEGER");
+
                     b.Property<string>("Path")
                         .IsRequired()
                         .HasMaxLength(500)
@@ -3816,12 +3823,14 @@ namespace Sportarr.Api.Migrations
 
             modelBuilder.Entity("Sportarr.Api.Models.League", b =>
                 {
-                    b.HasOne("Sportarr.Api.Models.RootFolder", null)
+                    b.HasOne("Sportarr.Api.Models.RootFolder", "RootFolder")
                         .WithMany()
                         .HasForeignKey("RootFolderId")
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("MonitoredTeams");
+
+                    b.Navigation("RootFolder");
                 });
 #pragma warning restore 612, 618
         }

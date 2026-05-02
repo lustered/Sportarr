@@ -101,17 +101,19 @@ public class AutomaticSearchService : IAutomaticSearchService
                 }
             }
 
-            // Get event
-            var evt = await _db.Events.FindAsync(eventId);
+            // Get event with the bound RootFolder eagerly so the grab path
+            // below can resolve a per-root DefaultDownloadClientCategory
+            // override without a follow-up query.
+            var evt = await _db.Events
+                .Include(e => e.League)
+                .ThenInclude(l => l!.RootFolder)
+                .FirstOrDefaultAsync(e => e.Id == eventId);
             if (evt == null)
             {
                 result.Success = false;
                 result.Message = "Event not found";
                 return result;
             }
-
-            // Load league to check its monitored status
-            await _db.Entry(evt).Reference(e => e.League).LoadAsync();
 
             // MONITORED CHECK: Only applies to automatic background searches
             // Manual searches (user clicking search button) should always work
@@ -936,11 +938,19 @@ public class AutomaticSearchService : IAutomaticSearchService
             var indexerRecord = await _db.Indexers
                 .FirstOrDefaultAsync(i => i.Name == bestRelease.Indexer);
 
+            // Resolve the effective category. Per-root override (Phase 4)
+            // wins so leagues bound to "fast SSD" can hit one category
+            // while leagues bound to "archive HDD" hit another, even
+            // when both share a download client.
+            var grabCategory = !string.IsNullOrWhiteSpace(evt.League?.RootFolder?.DefaultDownloadClientCategory)
+                ? evt.League.RootFolder.DefaultDownloadClientCategory!
+                : downloadClient.Category;
+
             // Send to download client with seed config from indexer
             var downloadId = await _downloadClientService.AddDownloadAsync(
                 downloadClient,
                 bestRelease.DownloadUrl,
-                downloadClient.Category,
+                grabCategory,
                 bestRelease.Title,
                 indexerRecord?.SeedRatio,
                 indexerRecord?.SeedTime

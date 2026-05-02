@@ -136,6 +136,7 @@ public class RssSyncService : BackgroundService
         var nowUtc = DateTime.UtcNow;
         var monitoredEvents = await db.Events
             .Include(e => e.League)
+            .ThenInclude(l => l!.RootFolder)
             .Include(e => e.HomeTeam)
             .Include(e => e.AwayTeam)
             .Where(e => e.Monitored && e.League != null && e.EventDate <= nowUtc)
@@ -821,11 +822,16 @@ public class RssSyncService : BackgroundService
         var indexerRecord = await db.Indexers
             .FirstOrDefaultAsync(i => i.Name == release.Indexer, cancellationToken);
 
+        // Per-root override beats the download client's default category.
+        var rssGrabCategory = !string.IsNullOrWhiteSpace(evt.League?.RootFolder?.DefaultDownloadClientCategory)
+            ? evt.League.RootFolder.DefaultDownloadClientCategory!
+            : downloadClient.Category;
+
         // Send to download client with seed config from indexer
         var downloadId = await downloadClientService.AddDownloadAsync(
             downloadClient,
             release.DownloadUrl,
-            downloadClient.Category,
+            rssGrabCategory,
             release.Title,
             indexerRecord?.SeedRatio,
             indexerRecord?.SeedTime

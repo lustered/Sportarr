@@ -39,6 +39,8 @@ interface RootFolder {
   accessible: boolean;
   freeSpace: number;
   totalSpace: number;
+  defaultQualityProfileId?: number | null;
+  defaultDownloadClientCategory?: string | null;
 }
 
 interface AddLeagueModalProps {
@@ -1101,7 +1103,21 @@ export default function AddLeagueModal({ league, isOpen, onClose, onAdd, isAddin
                         <>
                           <select
                             value={rootFolderId ?? ''}
-                            onChange={(e) => setRootFolderId(e.target.value ? parseInt(e.target.value) : null)}
+                            onChange={(e) => {
+                              const newRootId = e.target.value ? parseInt(e.target.value) : null;
+                              setRootFolderId(newRootId);
+                              // Cascade per-root defaults (Phase 4): if the
+                              // selected root has a pinned Quality Profile,
+                              // adopt it. The user can still override
+                              // manually after — we only auto-apply when
+                              // the root actually has a default to give.
+                              if (newRootId != null) {
+                                const picked = rootFolders.find(rf => rf.id === newRootId);
+                                if (picked?.defaultQualityProfileId != null) {
+                                  setQualityProfileId(picked.defaultQualityProfileId);
+                                }
+                              }
+                            }}
                             className="w-full px-3 py-2 bg-black border border-red-900/30 rounded-lg text-white focus:outline-none focus:border-red-600 focus:ring-1 focus:ring-red-600"
                           >
                             {rootFolders.map(rf => {
@@ -1116,6 +1132,18 @@ export default function AddLeagueModal({ league, isOpen, onClose, onAdd, isAddin
                           </select>
                           <p className="text-xs text-gray-400 mt-2">
                             All events for this league will be imported under this folder.
+                            {(() => {
+                              const r = rootFolders.find(rf => rf.id === rootFolderId);
+                              const hints: string[] = [];
+                              if (r?.defaultQualityProfileId != null) {
+                                const p = qualityProfiles.find(qp => qp.id === r.defaultQualityProfileId);
+                                if (p) hints.push(`default profile: ${p.name}`);
+                              }
+                              if (r?.defaultDownloadClientCategory) {
+                                hints.push(`download category: ${r.defaultDownloadClientCategory}`);
+                              }
+                              return hints.length > 0 ? ` (${hints.join(' · ')})` : '';
+                            })()}
                           </p>
                         </>
                       )}

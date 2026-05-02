@@ -27,6 +27,14 @@ interface RootFolder {
   path: string;
   accessible: boolean;
   freeSpace: number;
+  totalSpace: number;
+  defaultQualityProfileId?: number | null;
+  defaultDownloadClientCategory?: string | null;
+}
+
+interface QualityProfileOption {
+  id: number;
+  name: string;
 }
 
 interface MediaManagementSettingsData {
@@ -117,6 +125,7 @@ const SPORT_TYPES = [
 export default function MediaManagementSettings({ showAdvanced: propShowAdvanced = false }: MediaManagementSettingsProps) {
   const queryClient = useQueryClient();
   const [rootFolders, setRootFolders] = useState<RootFolder[]>([]);
+  const [qualityProfileOptions, setQualityProfileOptions] = useState<QualityProfileOption[]>([]);
   // Per-root cache for the unmapped-folders endpoint. The list is opt-in
   // so we don't walk the disk unsolicited every time the user opens the
   // Settings page.
@@ -494,15 +503,50 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
 
   const fetchRootFolders = async () => {
     try {
-      const response = await apiGet('/api/rootfolder');
-      if (response.ok) {
-        const data = await response.json();
+      const [foldersRes, profilesRes] = await Promise.all([
+        apiGet('/api/rootfolder'),
+        apiGet('/api/qualityprofile').catch(() => null),
+      ]);
+      if (foldersRes.ok) {
+        const data = await foldersRes.json();
         setRootFolders(data);
+      }
+      if (profilesRes && profilesRes.ok) {
+        const profiles = await profilesRes.json();
+        setQualityProfileOptions(Array.isArray(profiles) ? profiles : []);
       }
     } catch (error) {
       console.error('Failed to fetch root folders:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // PUT the per-root defaults back to /api/rootfolder/{id}. Called by the
+  // inline edits on each root folder card. We patch local state
+  // optimistically so the UI doesn't flash stale values; any error from
+  // the server reverts and surfaces a toast.
+  const updateRootFolderDefaults = async (
+    folderId: number,
+    patch: { defaultQualityProfileId?: number | null; defaultDownloadClientCategory?: string | null },
+  ) => {
+    const original = rootFolders.find(rf => rf.id === folderId);
+    if (!original) return;
+    const optimistic: RootFolder = { ...original, ...patch };
+    setRootFolders(prev => prev.map(rf => (rf.id === folderId ? optimistic : rf)));
+    try {
+      const response = await apiPut(`/api/rootfolder/${folderId}`, optimistic);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        window.alert(`Failed to save root-folder defaults: ${body?.error ?? response.statusText}`);
+        setRootFolders(prev => prev.map(rf => (rf.id === folderId ? original : rf)));
+      } else {
+        const fresh = await response.json();
+        setRootFolders(prev => prev.map(rf => (rf.id === folderId ? fresh : rf)));
+      }
+    } catch (err) {
+      console.error('Failed to update root folder defaults:', err);
+      setRootFolders(prev => prev.map(rf => (rf.id === folderId ? original : rf)));
     }
   };
 
@@ -755,8 +799,22 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
                     <div className="flex-1 min-w-0">
                       <p className="text-white font-medium truncate">{folder.path}</p>
                       <p className="text-sm text-gray-400">
-                        Free Space: {formatBytes(folder.freeSpace)}
+                        {folder.totalSpace > 0
+                          ? `${formatBytes(folder.totalSpace - folder.freeSpace)} used · ${formatBytes(folder.freeSpace)} free of ${formatBytes(folder.totalSpace)}`
+                          : `Free Space: ${formatBytes(folder.freeSpace)}`}
                       </p>
+                      {/* Disk-usage bar — purely visual, computed live each
+                          fetch. Bar fills red when usage exceeds 90% so a
+                          full disk pops out at a glance. */}
+                      {folder.accessible && folder.totalSpace > 0 && (() => {
+                        const usedPct = Math.min(100, Math.max(0, ((folder.totalSpace - folder.freeSpace) / folder.totalSpace) * 100));
+                        const barColor = usedPct >= 95 ? 'bg-red-600' : usedPct >= 85 ? 'bg-yellow-500' : 'bg-green-600';
+                        return (
+                          <div className="mt-2 h-1.5 w-full bg-gray-800 rounded overflow-hidden">
+                            <div className={`h-full ${barColor}`} style={{ width: `${usedPct.toFixed(1)}%` }} />
+                          </div>
+                        );
+                      })()}
                     </div>
                   </div>
                   <div className="flex items-center space-x-3 flex-shrink-0">
@@ -779,6 +837,54 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
                     >
                       Delete
                     </button>
+                  </div>
+                </div>
+
+                {/* Per-root defaults (Phase 4): both optional. Quality
+                    Profile is suggested at league add time; download
+                    client category overrides the client's configured
+                    Category at grab time for any league bound to this
+                    root. Saves on change via PUT /api/rootfolder/{id}. */}
+                <div className="px-4 pb-3 grid grid-cols-1 md:grid-cols-2 gap-3 border-t border-gray-800/40 pt-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Default Quality Profile</label>
+                    <select
+                      value={folder.defaultQualityProfileId ?? ''}
+                      onChange={(e) =>
+                        updateRootFolderDefaults(folder.id, {
+                          defaultQualityProfileId: e.target.value ? parseInt(e.target.value) : null,
+                        })
+                      }
+                      className="w-full px-2 py-1.5 bg-black border border-gray-700 text-gray-200 text-sm rounded focus:outline-none focus:border-red-600 focus:ring-1 focus:ring-red-600"
+                    >
+                      <option value="">No default (use global)</option>
+                      {qualityProfileOptions.map(qp => (
+                        <option key={qp.id} value={qp.id}>{qp.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Download Client Category Override</label>
+                    <input
+                      type="text"
+                      value={folder.defaultDownloadClientCategory ?? ''}
+                      onChange={(e) =>
+                        setRootFolders(prev =>
+                          prev.map(rf =>
+                            rf.id === folder.id
+                              ? { ...rf, defaultDownloadClientCategory: e.target.value }
+                              : rf
+                          )
+                        )
+                      }
+                      onBlur={(e) =>
+                        updateRootFolderDefaults(folder.id, {
+                          defaultDownloadClientCategory: e.target.value.trim() === '' ? null : e.target.value.trim(),
+                        })
+                      }
+                      placeholder="(none — use download client's category)"
+                      className="w-full px-2 py-1.5 bg-black border border-gray-700 text-gray-200 text-sm rounded focus:outline-none focus:border-red-600 focus:ring-1 focus:ring-red-600"
+                    />
                   </div>
                 </div>
                 {unmappedState?.expanded && (

@@ -155,6 +155,39 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify Leagues.RootFolderId column: {ex.Message}");
         }
 
+        // Ensure RootFolders has the per-root default columns. Added so a
+        // user can pin a Quality Profile and a Download Client category to
+        // each root (e.g. fast SSD with 2160p profile + "live" category;
+        // archive HDD with 1080p profile + "archive" category). Both
+        // nullable: empty means "use global default", so existing setups
+        // continue to work unchanged.
+        try
+        {
+            var checkDefaultProfileSql = "SELECT COUNT(*) FROM pragma_table_info('RootFolders') WHERE name='DefaultQualityProfileId'";
+            var defaultProfileExists = db.Database.SqlQueryRaw<int>(checkDefaultProfileSql).AsEnumerable().FirstOrDefault();
+
+            if (defaultProfileExists == 0)
+            {
+                Console.WriteLine("[Sportarr] RootFolders.DefaultQualityProfileId column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE RootFolders ADD COLUMN DefaultQualityProfileId INTEGER");
+                Console.WriteLine("[Sportarr] RootFolders.DefaultQualityProfileId column added successfully");
+            }
+
+            var checkDefaultCategorySql = "SELECT COUNT(*) FROM pragma_table_info('RootFolders') WHERE name='DefaultDownloadClientCategory'";
+            var defaultCategoryExists = db.Database.SqlQueryRaw<int>(checkDefaultCategorySql).AsEnumerable().FirstOrDefault();
+
+            if (defaultCategoryExists == 0)
+            {
+                Console.WriteLine("[Sportarr] RootFolders.DefaultDownloadClientCategory column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE RootFolders ADD COLUMN DefaultDownloadClientCategory TEXT");
+                Console.WriteLine("[Sportarr] RootFolders.DefaultDownloadClientCategory column added successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not verify RootFolders default columns: {ex.Message}");
+        }
+
         // Ensure DisableSslCertificateValidation column exists in DownloadClients table (backwards compatibility fix)
         try
         {
