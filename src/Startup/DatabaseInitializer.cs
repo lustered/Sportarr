@@ -155,6 +155,37 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify Leagues.RootFolderId column: {ex.Message}");
         }
 
+        // Drop the legacy persisted live-state columns from RootFolders.
+        // These were previously persisted (Accessible / FreeSpace / TotalSpace
+        // / LastChecked) but Phase 3 of the root-folders rework moved them to
+        // [NotMapped] live-only fields. The drop migration handles fresh
+        // installs; this safety net handles legacy databases that were
+        // originally created with EnsureCreated() — the migration-history
+        // seeder marks every migration as applied without actually running
+        // the DropColumn, so the NOT NULL columns survive and INSERTs from
+        // the [NotMapped] model fail with a constraint violation. SQLite
+        // 3.35+ supports ALTER TABLE DROP COLUMN; we wrap each call in its
+        // own try/catch so an older sqlite or an already-dropped column
+        // never aborts startup.
+        foreach (var legacyCol in new[] { "Accessible", "FreeSpace", "TotalSpace", "LastChecked" })
+        {
+            try
+            {
+                var checkSql = $"SELECT COUNT(*) FROM pragma_table_info('RootFolders') WHERE name='{legacyCol}'";
+                var exists = db.Database.SqlQueryRaw<int>(checkSql).AsEnumerable().FirstOrDefault();
+                if (exists > 0)
+                {
+                    Console.WriteLine($"[Sportarr] Legacy RootFolders.{legacyCol} column found - dropping it now...");
+                    db.Database.ExecuteSqlRaw($"ALTER TABLE RootFolders DROP COLUMN {legacyCol}");
+                    Console.WriteLine($"[Sportarr] RootFolders.{legacyCol} column dropped successfully");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[Sportarr] Warning: Could not drop RootFolders.{legacyCol}: {ex.Message}");
+            }
+        }
+
         // Ensure RootFolders has the per-root default columns. Added so a
         // user can pin a Quality Profile and a Download Client category to
         // each root (e.g. fast SSD with 2160p profile + "live" category;
