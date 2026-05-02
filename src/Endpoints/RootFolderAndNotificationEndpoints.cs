@@ -52,10 +52,47 @@ app.MapPost("/api/rootfolder", async (RootFolder folder, SportarrDbContext db, D
     return Results.Created($"/api/rootfolder/{folder.Id}", folder);
 });
 
-app.MapDelete("/api/rootfolder/{id:int}", async (int id, SportarrDbContext db) =>
+app.MapDelete("/api/rootfolder/{id:int}", async (int id, bool? force, SportarrDbContext db, ILogger<Program> logger) =>
 {
     var folder = await db.RootFolders.FindAsync(id);
     if (folder is null) return Results.NotFound();
+
+    // Block delete when leagues are still bound to this root folder. The
+    // FK constraint would already refuse to cascade, but surfacing a 409
+    // with the offending league IDs gives the UI something to render so
+    // the user can either rebind those leagues or pass force=true to
+    // detach the binding (set RootFolderId=null) before deleting.
+    var boundLeagues = await db.Leagues
+        .Where(l => l.RootFolderId == id)
+        .Select(l => new { l.Id, l.Name })
+        .ToListAsync();
+
+    if (boundLeagues.Count > 0)
+    {
+        if (force == true)
+        {
+            logger.LogWarning("[ROOTFOLDER] Force-deleting root folder {Id} ({Path}) — detaching {Count} bound leagues first.",
+                id, folder.Path, boundLeagues.Count);
+            // Detach bindings: legacy fallback (free-space heuristic) will
+            // pick a destination at next import, mirroring pre-binding
+            // behavior. The user has been warned via the UI.
+            await db.Leagues
+                .Where(l => l.RootFolderId == id)
+                .ExecuteUpdateAsync(setter => setter.SetProperty(l => l.RootFolderId, (int?)null));
+        }
+        else
+        {
+            logger.LogInformation("[ROOTFOLDER] Refusing delete of root folder {Id} ({Path}) — {Count} leagues are still bound to it.",
+                id, folder.Path, boundLeagues.Count);
+            return Results.Conflict(new
+            {
+                error = "Root folder is still bound to one or more leagues.",
+                folder = new { folder.Id, folder.Path },
+                leagues = boundLeagues,
+                hint = "Rebind the leagues to a different root folder, or call DELETE /api/rootfolder/{id}?force=true to detach the bindings before deleting.",
+            });
+        }
+    }
 
     db.RootFolders.Remove(folder);
     await db.SaveChangesAsync();

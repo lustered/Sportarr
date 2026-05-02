@@ -531,16 +531,45 @@ export default function MediaManagementSettings({ showAdvanced: propShowAdvanced
     }
   };
 
-  const handleDeleteFolder = async (id: number) => {
+  const handleDeleteFolder = async (id: number, force: boolean = false) => {
     try {
-      const response = await apiDelete(`/api/rootfolder/${id}`);
+      const url = force ? `/api/rootfolder/${id}?force=true` : `/api/rootfolder/${id}`;
+      const response = await apiDelete(url);
 
       if (response.ok) {
         setRootFolders(prev => prev.filter(f => f.id !== id));
         setShowDeleteConfirm(null);
+        return;
       }
+
+      // 409: leagues are still bound to this root folder. Surface the
+      // conflict to the user with the option to force-detach the
+      // bindings before deleting. The API returns the offending league
+      // names so the prompt can list them.
+      if (response.status === 409) {
+        const body = await response.json().catch(() => null);
+        const leagueNames = (body?.leagues ?? [])
+          .map((l: { id: number; name: string }) => `  • ${l.name} (id ${l.id})`)
+          .join('\n');
+        const confirmed = window.confirm(
+          `${body?.error ?? 'Root folder is still bound to leagues.'}\n\n` +
+          `${leagueNames}\n\n` +
+          `Click OK to detach the bindings and delete the root folder anyway. ` +
+          `The leagues will fall back to free-space selection on their next import. ` +
+          `Click Cancel to leave everything as is.`
+        );
+        if (confirmed) {
+          await handleDeleteFolder(id, true);
+        }
+        return;
+      }
+
+      // Other failure path: surface whatever the server said.
+      const errBody = await response.json().catch(() => null);
+      window.alert(`Failed to delete folder: ${errBody?.error ?? response.statusText}`);
     } catch (error) {
       console.error('Failed to delete folder:', error);
+      window.alert('Failed to delete folder. See console for details.');
     }
   };
 

@@ -1822,6 +1822,87 @@ app.MapPost("/api/leagues/{id:int}/recalculate-episodes", async (
     }
 });
 
+// PUT /api/leagues/{id}/move — change a league's RootFolderId binding,
+// optionally moving its on-disk media folder to the new root in the
+// process. The two flags map to the upstream Move Series feature: the
+// rootFolderId is the destination, moveFiles toggles whether files
+// follow (true) or stay where they are (false). Failures are surfaced
+// as the appropriate HTTP status code so the UI can show a useful
+// message rather than a generic 500.
+app.MapPut("/api/leagues/{id:int}/move", async (int id, MoveLeagueRequest request, LeagueMoveService moveService, ILogger<Program> logger) =>
+{
+    if (request == null)
+    {
+        return Results.BadRequest(new { error = "Request body is required" });
+    }
+    logger.LogInformation("[LEAGUES] PUT /api/leagues/{Id}/move - rootFolderId={RootId}, moveFiles={MoveFiles}",
+        id, request.RootFolderId, request.MoveFiles);
+
+    var result = await moveService.MoveLeagueAsync(id, request.RootFolderId, request.MoveFiles);
+    return MapMoveResultToHttp(result);
+});
+
+// POST /api/leagues/move/bulk — same operation across many leagues.
+// Each league is moved in its own DB transaction, so a failure on one
+// doesn't abort the others; the per-league results come back in the
+// response so the UI can surface the failures individually.
+app.MapPost("/api/leagues/move/bulk", async (BulkMoveLeaguesRequest request, LeagueMoveService moveService, ILogger<Program> logger) =>
+{
+    if (request == null || request.LeagueIds == null || request.LeagueIds.Count == 0)
+    {
+        return Results.BadRequest(new { error = "leagueIds must not be empty" });
+    }
+    logger.LogInformation("[LEAGUES] POST /api/leagues/move/bulk - {Count} leagues -> rootFolderId={RootId}, moveFiles={MoveFiles}",
+        request.LeagueIds.Count, request.RootFolderId, request.MoveFiles);
+
+    var results = await moveService.MoveLeaguesAsync(request.LeagueIds, request.RootFolderId, request.MoveFiles);
+    var anyFailed = results.Any(r => !r.Success);
+    return Results.Json(new
+    {
+        results = results.Select(r => new
+        {
+            leagueId = r.LeagueId,
+            success = r.Success,
+            status = r.Status.ToString(),
+            message = r.Message,
+            filesMoved = r.FilesMoved,
+            oldPath = r.OldPath,
+            newPath = r.NewPath,
+        }),
+        anyFailed,
+    }, statusCode: anyFailed ? 207 /* Multi-Status */ : 200);
+});
+
         return app;
+    }
+
+    /// <summary>Translate a LeagueMoveResult into the HTTP response shape.</summary>
+    private static IResult MapMoveResultToHttp(LeagueMoveResult result)
+    {
+        return result.Status switch
+        {
+            LeagueMoveStatus.Ok => Results.Ok(new
+            {
+                leagueId = result.LeagueId,
+                rootFolderId = result.NewRootFolderId,
+                filesMoved = result.FilesMoved,
+                oldPath = result.OldPath,
+                newPath = result.NewPath,
+                message = result.Message,
+            }),
+            LeagueMoveStatus.SameRootFolder => Results.Ok(new
+            {
+                leagueId = result.LeagueId,
+                rootFolderId = result.NewRootFolderId,
+                message = "League is already bound to that root folder; nothing to do.",
+            }),
+            LeagueMoveStatus.LeagueNotFound => Results.NotFound(new { error = $"League {result.LeagueId} not found" }),
+            LeagueMoveStatus.RootFolderNotFound => Results.BadRequest(new { error = $"Root folder {result.NewRootFolderId} does not exist." }),
+            LeagueMoveStatus.RootFolderInaccessible => Results.BadRequest(new { error = $"Root folder is not accessible: {result.Message}" }),
+            LeagueMoveStatus.SourceFolderAmbiguous => Results.BadRequest(new { error = result.Message ?? "Could not resolve the league's current on-disk folder." }),
+            LeagueMoveStatus.DestinationExists => Results.Conflict(new { error = result.Message ?? "Destination already exists." }),
+            LeagueMoveStatus.MoveFailed => Results.Problem(detail: result.Message, statusCode: 500, title: "League move failed"),
+            _ => Results.Problem(detail: "Unknown move status", statusCode: 500),
+        };
     }
 }

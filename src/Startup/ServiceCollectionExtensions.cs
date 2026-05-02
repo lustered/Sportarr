@@ -231,6 +231,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<LeagueEventSyncService>();
         services.AddScoped<TeamLeagueDiscoveryService>();
         services.AddScoped<PackImportService>();
+        services.AddScoped<LeagueMoveService>();
 
         return services;
     }
