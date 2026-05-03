@@ -55,7 +55,7 @@ public class EventChannelResolverService
             .FirstOrDefaultAsync(e => e.Id == eventId, ct);
         if (evt == null) return new List<EventChannelCandidate>();
 
-        var leagueId = evt.LeagueId;
+        var leagueId = evt.LeagueId ?? 0;
 
         var channels = await _db.IptvChannels
             .Include(c => c.Source)
@@ -65,9 +65,13 @@ public class EventChannelResolverService
 
         // Pull existing league mappings so we can boost preferred
         // channels and fall back to them when broadcast data is empty.
-        var leagueMappings = await _db.ChannelLeagueMappings
-            .Where(m => m.LeagueId == leagueId)
-            .ToListAsync(ct);
+        // leagueId == 0 means the event has no league - the query
+        // returns no mappings and we fall through to broadcast-only.
+        var leagueMappings = leagueId > 0
+            ? await _db.ChannelLeagueMappings
+                .Where(m => m.LeagueId == leagueId)
+                .ToListAsync(ct)
+            : new List<ChannelLeagueMapping>();
         var preferredChannelIds = new HashSet<int>(leagueMappings.Where(m => m.IsPreferred).Select(m => m.ChannelId));
         var mappedChannelIds = new HashSet<int>(leagueMappings.Select(m => m.ChannelId));
 
@@ -118,7 +122,7 @@ public class EventChannelResolverService
                 ch.Id,
                 ch.Name,
                 ch.Source?.Name ?? "(unknown)",
-                ch.QualityScore ?? 0,
+                ch.QualityScore,
                 ch.DetectedQuality,
                 score,
                 source));
@@ -164,7 +168,7 @@ public class EventChannelResolverService
             .Where(c => c.IsEnabled && c.Source != null && c.Source.IsActive)
             .ToListAsync(ct);
 
-        var leagueIds = events.Select(e => e.LeagueId).Distinct().ToList();
+        var leagueIds = events.Select(e => e.LeagueId).Where(id => id.HasValue).Select(id => id!.Value).Distinct().ToList();
         var mappings = await _db.ChannelLeagueMappings
             .Where(m => leagueIds.Contains(m.LeagueId))
             .ToListAsync(ct);
@@ -177,9 +181,14 @@ public class EventChannelResolverService
         var result = new Dictionary<int, EventChannelCandidate>();
         foreach (var evt in events)
         {
+            // Events without a league won't have league mappings to
+            // fall back on, but their broadcast string may still be
+            // resolvable. Treat the missing league as "no mapped or
+            // preferred channels".
+            var leagueId = evt.LeagueId ?? -1;
             var broadcastTokens = TokenizeBroadcast(evt.Broadcast);
-            var preferred = byLeaguePreferred.TryGetValue(evt.LeagueId, out var p) ? p : new HashSet<int>();
-            var mapped = byLeagueMapped.TryGetValue(evt.LeagueId, out var m) ? m : new HashSet<int>();
+            var preferred = byLeaguePreferred.TryGetValue(leagueId, out var p) ? p : new HashSet<int>();
+            var mapped = byLeagueMapped.TryGetValue(leagueId, out var m) ? m : new HashSet<int>();
 
             EventChannelCandidate? best = null;
             foreach (var ch in channels)
@@ -211,11 +220,11 @@ public class EventChannelResolverService
 
                 if (best == null
                     || score > best.Confidence
-                    || (score == best.Confidence && (ch.QualityScore ?? 0) > best.QualityScore))
+                    || (score == best.Confidence && (ch.QualityScore) > best.QualityScore))
                 {
                     best = new EventChannelCandidate(
                         ch.Id, ch.Name, ch.Source?.Name ?? "(unknown)",
-                        ch.QualityScore ?? 0, ch.DetectedQuality, score, source);
+                        ch.QualityScore, ch.DetectedQuality, score, source);
                 }
             }
 

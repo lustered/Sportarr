@@ -159,6 +159,24 @@ public class League
     public string? SearchQueryTemplate { get; set; }
 
     /// <summary>
+    /// Override the global DVR pre-roll padding (minutes before the
+    /// scheduled event start) for this league. Null falls back to
+    /// sport-specific defaults, then to the global setting. Sports
+    /// like the NFL routinely run long; this lets the user pad NFL
+    /// recordings without inflating every other league's runtime.
+    /// </summary>
+    public int? DvrPrePadMinutes { get; set; }
+
+    /// <summary>
+    /// Override the global DVR post-roll padding (minutes after the
+    /// scheduled event end) for this league. Null falls back to the
+    /// sport-specific default in DvrPaddingDefaults, then to the
+    /// global setting. Useful for sports that overrun: NFL ~30,
+    /// NBA ~15, EPL ~10, UFC PPVs ~30, F1 ~15.
+    /// </summary>
+    public int? DvrPostRollMinutes { get; set; }
+
+    /// <summary>
     /// League logo/badge URL
     /// </summary>
     [JsonPropertyName("strBadge")]

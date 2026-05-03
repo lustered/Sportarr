@@ -1872,6 +1872,12 @@ namespace Sportarr.Api.Migrations
                     b.Property<bool>("IsSportsChannel")
                         .HasColumnType("INTEGER");
 
+                    b.Property<int?>("IptvOrgConfidence")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("IptvOrgId")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("Language")
                         .HasMaxLength(50)
                         .HasColumnType("TEXT");
@@ -2013,6 +2019,12 @@ namespace Sportarr.Api.Migrations
                         .HasMaxLength(2000)
                         .HasColumnType("TEXT")
                         .HasAnnotation("Relational:JsonPropertyName", "strDescriptionEN");
+
+                    b.Property<int?>("DvrPostRollMinutes")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<int?>("DvrPrePadMinutes")
+                        .HasColumnType("INTEGER");
 
                     b.Property<string>("ExternalId")
                         .HasMaxLength(50)

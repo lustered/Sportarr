@@ -103,7 +103,7 @@ public static class HdHomeRunEndpoints
                     GuideNumber = guideNumber,
                     GuideName = ch.Name ?? $"Channel {ch.Id}",
                     URL = $"{baseUrl}/api/iptv/stream/{ch.Id}",
-                    HD = (ch.QualityScore ?? 0) >= 200 ? 1 : 0,
+                    HD = ch.QualityScore >= 200 ? 1 : 0,
                     Favorite = ch.IsFavorite ? 1 : 0,
                     VideoCodec = "H264",
                     AudioCodec = "AAC"
