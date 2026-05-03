@@ -301,8 +301,13 @@ public class RssClient
             DownloadUrl = downloadUrl,
             Indexer = indexer.Name,
             Size = size ?? 0,
-            Seeders = seeders ?? 0,
-            Leechers = leechers ?? 0,
+            // Preserve null when the RSS feed doesn't expose peer counts.
+            // Coercing unknown peers to 0 caused ReleaseEvaluator to reject
+            // these releases as "No seeders available", since it treats an
+            // explicit 0 as fatal but ignores null. Many tracker RSS feeds
+            // omit seeders/leechers entirely, so unknown != "no peers".
+            Seeders = seeders,
+            Leechers = leechers,
             PublishDate = pubDate ?? DateTime.UtcNow,
             Guid = guid,
             TorrentInfoHash = infoHash,
