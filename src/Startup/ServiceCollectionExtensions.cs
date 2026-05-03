@@ -252,6 +252,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<EpgSchedulingService>();
         services.AddScoped<EventChannelResolverService>();
         services.AddScoped<FilteredExportService>();
+        // Singleton because it caches the iptv-org/database CSV
+        // (~30k rows) in memory across requests.
+        services.AddSingleton<IptvOrgSyncService>();
 
         return services;
     }

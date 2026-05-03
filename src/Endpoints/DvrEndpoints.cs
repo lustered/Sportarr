@@ -247,6 +247,29 @@ app.MapPost("/api/events/{eventId:int}/dvr/cancel", async (int eventId, EventDvr
     return Results.Ok(new { success = true });
 });
 
+// iptv-org canonical channel matching. The database is a public
+// metadata catalog (Unlicense / CC0) of every TV channel in the
+// world keyed by stable "Name.cc" ids. We don't pull their stream
+// lists - the user always provides M3U sources - we only use the
+// catalog to resolve display name/logo/country and to anchor
+// channel identity across provider rebrands.
+app.MapPost("/api/iptv/iptv-org/refresh", async (
+    IptvOrgSyncService svc,
+    CancellationToken ct) =>
+{
+    var count = await svc.RefreshCacheAsync(ct);
+    return Results.Ok(new { success = true, canonicalChannelCount = count });
+});
+
+app.MapPost("/api/iptv/iptv-org/match", async (
+    IptvOrgSyncService svc,
+    bool? overwrite,
+    CancellationToken ct) =>
+{
+    var updated = await svc.MatchUserChannelsAsync(overwriteHighConfidence: overwrite ?? false, ct);
+    return Results.Ok(new { success = true, channelsUpdated = updated });
+});
+
 // List candidate IPTV channels for an event ranked by confidence,
 // blending the metadata API's broadcast assertion (Event.Broadcast)
 // with the user's existing channel-league mappings and country
