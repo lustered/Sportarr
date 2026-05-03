@@ -131,6 +131,82 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify Blocklist.FilePath column: {ex.Message}");
         }
 
+        // Ensure the IPTV-org canonical-channel columns exist on
+        // IptvChannels. Added when the iptv-org sync service started
+        // assigning canonical "ESPN.us"-style ids to user channels;
+        // every IPTV channel query EF runs projects these columns,
+        // so legacy databases without them break the entire IPTV
+        // sources page on first sync.
+        try
+        {
+            var checkIptvOrgIdSql = "SELECT COUNT(*) FROM pragma_table_info('IptvChannels') WHERE name='IptvOrgId'";
+            var iptvOrgIdExists = db.Database.SqlQueryRaw<int>(checkIptvOrgIdSql).AsEnumerable().FirstOrDefault();
+            if (iptvOrgIdExists == 0)
+            {
+                Console.WriteLine("[Sportarr] IptvChannels.IptvOrgId column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE IptvChannels ADD COLUMN IptvOrgId TEXT");
+                db.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS IX_IptvChannels_IptvOrgId ON IptvChannels(IptvOrgId)");
+                Console.WriteLine("[Sportarr] IptvChannels.IptvOrgId column added successfully");
+            }
+
+            var checkIptvOrgConfSql = "SELECT COUNT(*) FROM pragma_table_info('IptvChannels') WHERE name='IptvOrgConfidence'";
+            var iptvOrgConfExists = db.Database.SqlQueryRaw<int>(checkIptvOrgConfSql).AsEnumerable().FirstOrDefault();
+            if (iptvOrgConfExists == 0)
+            {
+                Console.WriteLine("[Sportarr] IptvChannels.IptvOrgConfidence column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE IptvChannels ADD COLUMN IptvOrgConfidence INTEGER");
+                Console.WriteLine("[Sportarr] IptvChannels.IptvOrgConfidence column added successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not verify IptvChannels iptv-org columns: {ex.Message}");
+        }
+
+        // Ensure the per-league DVR padding overrides exist on
+        // Leagues. Same rationale as above - EF projects these on
+        // every league query so a legacy DB without them breaks the
+        // league list, the auto-scheduler, and EventDvrService.
+        try
+        {
+            var checkPrePadSql = "SELECT COUNT(*) FROM pragma_table_info('Leagues') WHERE name='DvrPrePadMinutes'";
+            var prePadExists = db.Database.SqlQueryRaw<int>(checkPrePadSql).AsEnumerable().FirstOrDefault();
+            if (prePadExists == 0)
+            {
+                Console.WriteLine("[Sportarr] Leagues.DvrPrePadMinutes column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE Leagues ADD COLUMN DvrPrePadMinutes INTEGER");
+                Console.WriteLine("[Sportarr] Leagues.DvrPrePadMinutes column added successfully");
+            }
+
+            var checkPostRollSql = "SELECT COUNT(*) FROM pragma_table_info('Leagues') WHERE name='DvrPostRollMinutes'";
+            var postRollExists = db.Database.SqlQueryRaw<int>(checkPostRollSql).AsEnumerable().FirstOrDefault();
+            if (postRollExists == 0)
+            {
+                Console.WriteLine("[Sportarr] Leagues.DvrPostRollMinutes column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE Leagues ADD COLUMN DvrPostRollMinutes INTEGER");
+                Console.WriteLine("[Sportarr] Leagues.DvrPostRollMinutes column added successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not verify League DVR padding columns: {ex.Message}");
+        }
+
+        // Ensure the per-league preferred-channel uniqueness index
+        // exists on ChannelLeagueMappings. Filtered unique on
+        // (LeagueId) WHERE IsPreferred = 1 - prevents two preferred
+        // rows for the same league. Idempotent via IF NOT EXISTS.
+        try
+        {
+            db.Database.ExecuteSqlRaw(
+                "CREATE UNIQUE INDEX IF NOT EXISTS \"UX_ChannelLeagueMappings_PreferredPerLeague\" " +
+                "ON \"ChannelLeagueMappings\" (\"LeagueId\") WHERE \"IsPreferred\" = 1");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not create UX_ChannelLeagueMappings_PreferredPerLeague index: {ex.Message}");
+        }
+
         // Ensure RootFolderId column exists in Leagues table. Added so each
         // league can be bound to a specific root folder at add time, instead
         // of the importer reselecting one from the free-space heuristic on
