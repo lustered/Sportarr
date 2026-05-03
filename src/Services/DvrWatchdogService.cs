@@ -79,6 +79,29 @@ public class DvrWatchdogService : BackgroundService
         var db = scope.ServiceProvider.GetRequiredService<SportarrDbContext>();
         var recorder = scope.ServiceProvider.GetRequiredService<FFmpegRecorderService>();
 
+        var now = DateTime.UtcNow;
+
+        // Mode 0 - missed-schedule recovery. A Scheduled row whose
+        // entire window (ScheduledEnd + PostPadding) is now in the
+        // past was missed entirely - probably because the app was
+        // down during its start time, or no IPTV slot was available
+        // and the conflict policy was Refuse. Mark it Failed so the
+        // user can see what happened and decide whether to reschedule.
+        var missed = await db.DvrRecordings
+            .Where(r => r.Status == DvrRecordingStatus.Scheduled)
+            .Where(r => r.ScheduledEnd.AddMinutes(r.PostPadding) < now)
+            .ToListAsync(ct);
+        foreach (var row in missed)
+        {
+            _logger.LogWarning(
+                "[DVR Watchdog] Missed recording {Id} ('{Title}'): scheduled window closed at {End} (+{Pad}m), still in Scheduled state. Marking Failed.",
+                row.Id, row.Title, row.ScheduledEnd, row.PostPadding);
+            row.Status = DvrRecordingStatus.Failed;
+            row.ActualEnd = now;
+            row.ErrorMessage = (row.ErrorMessage ?? "") +
+                "Watchdog: missed - the recording window closed before any recorder picked it up (app downtime, no available source slot, or scheduling conflict).";
+        }
+
         var inFlight = await db.DvrRecordings
             .Where(r => r.Status == DvrRecordingStatus.Recording)
             .ToListAsync(ct);
@@ -87,10 +110,11 @@ public class DvrWatchdogService : BackgroundService
         {
             // Garbage-collect stale tracker entries.
             if (_lastSize.Count > 0) _lastSize.Clear();
+            // Persist any missed-schedule transitions before returning.
+            if (missed.Count > 0) await db.SaveChangesAsync(ct);
             return;
         }
 
-        var now = DateTime.UtcNow;
         var seen = new HashSet<int>();
 
         foreach (var row in inFlight)

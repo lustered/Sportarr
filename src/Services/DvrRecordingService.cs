@@ -423,12 +423,21 @@ public class DvrRecordingService
         var now = DateTime.UtcNow;
         var cutoff = now.AddMinutes(minutesAhead);
 
+        // Recover recordings whose effective start is anywhere from
+        // ScheduledEnd ago up to `cutoff` in the future. A scheduler
+        // that filtered too aggressively here (the previous version
+        // refused anything more than 1 minute past) silently dropped
+        // every recording that was due during app downtime - they
+        // sat in Scheduled forever and the user never saw them
+        // start. Now we still pick them up if the recording window
+        // hasn't fully closed: ScheduledEnd + PostPadding hasn't
+        // passed yet.
         return await _db.DvrRecordings
             .Include(r => r.Channel)
             .ThenInclude(c => c!.Source)
             .Where(r => r.Status == DvrRecordingStatus.Scheduled)
             .Where(r => r.ScheduledStart.AddMinutes(-r.PrePadding) <= cutoff)
-            .Where(r => r.ScheduledStart.AddMinutes(-r.PrePadding) >= now.AddMinutes(-1)) // Not too far in past
+            .Where(r => r.ScheduledEnd.AddMinutes(r.PostPadding) > now)
             .OrderBy(r => r.ScheduledStart)
             .ToListAsync();
     }
