@@ -1859,6 +1859,26 @@ app.MapPut("/api/leagues/{id:int}/move", async (int id, MoveLeagueRequest reques
     return MapMoveResultToHttp(result);
 });
 
+// POST /api/leagues/{id}/reorganize - consolidate a league's files
+// into a single root folder when MoveLeagueAsync rejected the move
+// with SourceFolderAmbiguous because files were scattered across
+// multiple roots. Each scattered file is moved to {targetRoot}/{its
+// relative path under the current root}; files already under the
+// target are left alone. The league's binding is updated on success
+// so a subsequent rename or move sees a clean state.
+app.MapPost("/api/leagues/{id:int}/reorganize", async (int id, ReorganizeLeagueRequest request, LeagueMoveService moveService, ILogger<Program> logger) =>
+{
+    if (request == null)
+    {
+        return Results.BadRequest(new { error = "Request body is required" });
+    }
+    logger.LogInformation("[LEAGUES] POST /api/leagues/{Id}/reorganize - rootFolderId={RootId}",
+        id, request.RootFolderId);
+
+    var result = await moveService.ReorganizeLeagueAsync(id, request.RootFolderId);
+    return MapMoveResultToHttp(result);
+});
+
 // POST /api/leagues/move/bulk — same operation across many leagues.
 // Each league is moved in its own DB transaction, so a failure on one
 // doesn't abort the others; the per-league results come back in the

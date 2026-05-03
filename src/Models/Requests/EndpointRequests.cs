@@ -11,3 +11,6 @@ public record MoveLeagueRequest(int RootFolderId, bool MoveFiles);
 
 // POST /api/leagues/move/bulk
 public record BulkMoveLeaguesRequest(List<int> LeagueIds, int RootFolderId, bool MoveFiles);
+
+// POST /api/leagues/{id}/reorganize
+public record ReorganizeLeagueRequest(int RootFolderId);

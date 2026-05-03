@@ -150,7 +150,7 @@ public class LeagueMoveService
                 {
                     Status = LeagueMoveStatus.SourceFolderAmbiguous,
                     LeagueId = leagueId,
-                    Message = "League has files spread across multiple root folders. Use the (forthcoming) reorganize action to consolidate them before moving."
+                    Message = "League has files spread across multiple root folders. Run the Reorganize action to consolidate them under a single root, then try the move again."
                 };
             }
         }
@@ -304,6 +304,210 @@ public class LeagueMoveService
     }
 
     /// <summary>
+    /// Consolidate a league's files into a single root folder. Where
+    /// MoveLeagueAsync refuses when files span multiple roots (the
+    /// "SourceFolderAmbiguous" status), this walks the league's
+    /// EventFiles and moves each one whose current path is NOT under the
+    /// target root onto the target, preserving the relative path under
+    /// its current root. Files already under the target root are left
+    /// in place. The league's RootFolderId is updated to the target on
+    /// success so a subsequent move/rename works on a clean state.
+    ///
+    /// Failures roll back the on-disk moves we already made so the DB
+    /// state and disk state stay coherent.
+    /// </summary>
+    public async Task<LeagueMoveResult> ReorganizeLeagueAsync(int leagueId, int targetRootFolderId)
+    {
+        var league = await _db.Leagues.FirstOrDefaultAsync(l => l.Id == leagueId);
+        if (league == null)
+        {
+            return new LeagueMoveResult { Status = LeagueMoveStatus.LeagueNotFound, LeagueId = leagueId };
+        }
+
+        var targetRoot = await _db.RootFolders.FirstOrDefaultAsync(rf => rf.Id == targetRootFolderId);
+        if (targetRoot == null)
+        {
+            return new LeagueMoveResult { Status = LeagueMoveStatus.RootFolderNotFound, LeagueId = leagueId, NewRootFolderId = targetRootFolderId };
+        }
+        if (!Directory.Exists(targetRoot.Path))
+        {
+            return new LeagueMoveResult { Status = LeagueMoveStatus.RootFolderInaccessible, LeagueId = leagueId, NewRootFolderId = targetRootFolderId, Message = targetRoot.Path };
+        }
+
+        var eventFiles = await _db.EventFiles
+            .Include(ef => ef.Event)
+            .Where(ef => ef.Event != null && ef.Event.LeagueId == leagueId && ef.Exists && ef.FilePath != null)
+            .ToListAsync();
+
+        if (eventFiles.Count == 0)
+        {
+            league.RootFolderId = targetRootFolderId;
+            await _db.SaveChangesAsync();
+            return new LeagueMoveResult
+            {
+                Success = true,
+                Status = LeagueMoveStatus.Ok,
+                LeagueId = leagueId,
+                NewRootFolderId = targetRootFolderId,
+                NewPath = targetRoot.Path,
+                FilesMoved = 0,
+                Message = "No files to reorganize; binding updated."
+            };
+        }
+
+        // Resolve every file's current root via longest-prefix match.
+        var allRoots = await _db.RootFolders.ToListAsync();
+        var rootPaths = allRoots
+            .Select(rf => rf.Path)
+            .OrderByDescending(p => p.Length)
+            .ToList();
+
+        // Build the per-file move plan. Files already under the target
+        // root stay put (we still rewrite the league binding). Files
+        // outside every configured root abort the operation up front
+        // since we have no relative path to rewrite onto the target.
+        var plan = new List<(EventFile File, string OldPath, string NewPath)>();
+        foreach (var ef in eventFiles)
+        {
+            var match = rootPaths.FirstOrDefault(r => IsUnderRoot(ef.FilePath!, r));
+            if (match == null)
+            {
+                return new LeagueMoveResult
+                {
+                    Status = LeagueMoveStatus.SourceFolderAmbiguous,
+                    LeagueId = leagueId,
+                    Message = $"Event file {ef.FilePath} is outside every configured root folder. Resolve manually before reorganizing."
+                };
+            }
+            if (IsUnderRoot(ef.FilePath!, targetRoot.Path))
+            {
+                continue;
+            }
+            var rel = RelativeUnder(ef.FilePath!, match);
+            var newPath = Path.Combine(targetRoot.Path, rel);
+            plan.Add((ef, ef.FilePath!, newPath));
+        }
+
+        if (plan.Count == 0)
+        {
+            league.RootFolderId = targetRootFolderId;
+            await _db.SaveChangesAsync();
+            return new LeagueMoveResult
+            {
+                Success = true,
+                Status = LeagueMoveStatus.Ok,
+                LeagueId = leagueId,
+                NewRootFolderId = targetRootFolderId,
+                NewPath = targetRoot.Path,
+                FilesMoved = 0,
+                Message = "All files already lived under the target root; binding updated."
+            };
+        }
+
+        // Pre-flight: refuse if the destination already has any of the
+        // target paths occupied. Better to fail loud than to silently
+        // leave the user with two files claiming the same final path.
+        foreach (var (_, _, newPath) in plan)
+        {
+            if (File.Exists(newPath))
+            {
+                return new LeagueMoveResult
+                {
+                    Status = LeagueMoveStatus.DestinationExists,
+                    LeagueId = leagueId,
+                    Message = $"Destination already exists: {newPath}. Resolve the collision before reorganizing."
+                };
+            }
+        }
+
+        _logger.LogInformation("[League Reorganize] Moving {Count} file(s) for league {LeagueId} ({Name}) into {Target}",
+            plan.Count, league.Id, league.Name, targetRoot.Path);
+
+        var moved = new List<(string OldPath, string NewPath)>();
+        try
+        {
+            foreach (var (ef, oldPath, newPath) in plan)
+            {
+                var newDir = Path.GetDirectoryName(newPath);
+                if (!string.IsNullOrEmpty(newDir))
+                {
+                    Directory.CreateDirectory(newDir);
+                }
+
+                try
+                {
+                    File.Move(oldPath, newPath);
+                }
+                catch (IOException)
+                {
+                    // Cross-filesystem path: copy then delete.
+                    File.Copy(oldPath, newPath, overwrite: false);
+                    File.Delete(oldPath);
+                }
+
+                moved.Add((oldPath, newPath));
+                ef.FilePath = newPath;
+
+                // Keep the denormalized Event.FilePath in sync for any
+                // event whose canonical file we just moved.
+                if (ef.Event != null && ef.Event.FilePath != null &&
+                    string.Equals(NormalizePath(ef.Event.FilePath), NormalizePath(oldPath), StringComparison.OrdinalIgnoreCase))
+                {
+                    ef.Event.FilePath = newPath;
+                }
+            }
+
+            league.RootFolderId = targetRootFolderId;
+            await _db.SaveChangesAsync();
+
+            return new LeagueMoveResult
+            {
+                Success = true,
+                Status = LeagueMoveStatus.Ok,
+                LeagueId = leagueId,
+                NewRootFolderId = targetRootFolderId,
+                NewPath = targetRoot.Path,
+                FilesMoved = moved.Count,
+                Message = $"Reorganized {moved.Count} file(s) into {targetRoot.Path}."
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[League Reorganize] Failed for league {LeagueId}; rolling back {Count} on-disk move(s)",
+                leagueId, moved.Count);
+
+            foreach (var (oldPath, newPath) in moved)
+            {
+                try
+                {
+                    if (File.Exists(newPath) && !File.Exists(oldPath))
+                    {
+                        var oldDir = Path.GetDirectoryName(oldPath);
+                        if (!string.IsNullOrEmpty(oldDir))
+                        {
+                            Directory.CreateDirectory(oldDir);
+                        }
+                        File.Move(newPath, oldPath);
+                    }
+                }
+                catch (Exception rollbackEx)
+                {
+                    _logger.LogCritical(rollbackEx,
+                        "[League Reorganize] CRITICAL: rollback failed for {OldPath} <- {NewPath}. Manual cleanup required.",
+                        oldPath, newPath);
+                }
+            }
+
+            return new LeagueMoveResult
+            {
+                Status = LeagueMoveStatus.MoveFailed,
+                LeagueId = leagueId,
+                Message = ex.Message,
+            };
+        }
+    }
+
+    /// <summary>
     /// Bulk variant — runs MoveLeagueAsync per league and returns the
     /// per-league result list. Each league moves in its own transaction so
     /// a failure on one doesn't cancel the others; the caller surfaces the
@@ -372,6 +576,17 @@ public class LeagueMoveService
             normalizedPrefix += Path.DirectorySeparatorChar;
         return normalizedFile.StartsWith(normalizedPrefix, StringComparison.OrdinalIgnoreCase)
             || string.Equals(normalizedFile, NormalizePath(prefix), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string RelativeUnder(string filePath, string rootPath)
+    {
+        var normalizedFile = NormalizePath(filePath);
+        var normalizedRoot = NormalizePath(rootPath);
+        if (!normalizedRoot.EndsWith(Path.DirectorySeparatorChar))
+            normalizedRoot += Path.DirectorySeparatorChar;
+        return normalizedFile.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase)
+            ? normalizedFile.Substring(normalizedRoot.Length)
+            : normalizedFile;
     }
 
     private static string? FirstSegmentUnderRoot(string filePath, string rootPath)

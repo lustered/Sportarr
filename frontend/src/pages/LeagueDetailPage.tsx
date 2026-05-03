@@ -798,6 +798,45 @@ export default function LeagueDetailPage() {
     }
   };
 
+  // Reorganize-and-move: when the regular move was rejected because
+  // the league's files live under multiple root folders, the user can
+  // run this action to consolidate every file under the picked target
+  // root before the move proceeds. The backend also updates the
+  // league's root binding, so afterwards the league is fully on the
+  // target root with no follow-up needed.
+  const submitReorganize = async () => {
+    if (!league || moveTargetRootId == null) return;
+    setIsMoving(true);
+    setMoveError(null);
+    try {
+      const response = await apiClient.post(`/leagues/${league.id}/reorganize`, {
+        rootFolderId: moveTargetRootId,
+      });
+      const data = response.data as { filesMoved?: number; newPath?: string; message?: string };
+      const moved = data?.filesMoved ?? 0;
+      toast.success(
+        moved > 0
+          ? `Reorganized ${moved} file${moved === 1 ? '' : 's'} → ${data.newPath ?? 'target root'}`
+          : data?.message ?? 'League root folder updated.'
+      );
+      setShowMoveModal(false);
+      await queryClient.invalidateQueries({ queryKey: ['league', id] });
+      await queryClient.invalidateQueries({ queryKey: ['root-folders'] });
+    } catch (err: unknown) {
+      const error = err as { response?: { data?: { error?: string } } };
+      setMoveError(error?.response?.data?.error ?? 'Reorganize failed. Check the server logs for details.');
+    } finally {
+      setIsMoving(false);
+    }
+  };
+
+  // Show the "Reorganize and move" button when the most recent move
+  // attempt was blocked because files span multiple root folders.
+  // We match on the marker phrase from the backend message rather
+  // than wiring a separate status code, which keeps the contract
+  // permissive for future error wording tweaks.
+  const canReorganize = !!moveError && /spread across multiple root folders/i.test(moveError);
+
   const handleManualSearch = (eventId: number, eventTitle: string, part?: string, existingFiles?: EventFile[]) => {
     setManualSearchModal({
       isOpen: true,
@@ -2695,6 +2734,16 @@ export default function LeagueDetailPage() {
               >
                 Cancel
               </button>
+              {canReorganize && (
+                <button
+                  onClick={submitReorganize}
+                  disabled={isMoving || moveTargetRootId == null}
+                  className="px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 font-semibold transition-colors disabled:opacity-50"
+                  title="Move every file that currently lives outside the target root onto the target, preserving each file's relative path under its current root."
+                >
+                  {isMoving ? 'Reorganizing…' : 'Reorganize and Move'}
+                </button>
+              )}
               <button
                 onClick={submitMove}
                 disabled={isMoving || moveTargetRootId == null || moveTargetRootId === league.rootFolderId}
