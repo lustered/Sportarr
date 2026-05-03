@@ -44,6 +44,10 @@ interface DvrRecording {
   postPaddingMinutes: number;
   qualityProfileId?: number;
   qualityProfileName?: string;
+  // Multi-part fight cards (UFC etc.) tag the recording with which
+  // segment it covers - "Early Prelims", "Prelims", "Main Card".
+  // Surfaced inline next to the title.
+  partName?: string;
 }
 
 interface SportEvent {
@@ -543,7 +547,14 @@ export default function DvrSchedulePage() {
                                     </span>
                                   )}
                                 </div>
-                                <h4 className="font-medium text-white truncate">{recording.eventTitle}</h4>
+                                <h4 className="font-medium text-white truncate">
+                                  {recording.eventTitle}
+                                  {recording.partName && (
+                                    <span className="ml-2 text-xs text-amber-400 bg-amber-900/30 px-2 py-0.5 rounded font-normal">
+                                      {recording.partName}
+                                    </span>
+                                  )}
+                                </h4>
                                 <div className="flex flex-wrap items-center gap-4 mt-2 text-sm text-gray-400">
                                   <span className="flex items-center gap-1">
                                     <SignalIcon className="w-4 h-4" />
