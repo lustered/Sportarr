@@ -333,6 +333,28 @@ export default function IndexersSettings() {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
+  // Free-text mirror for the comma-separated category IDs input.
+  // We can't derive the input value from formData.categories.join(','):
+  // re-parsing on every keystroke strips the trailing comma the user
+  // just typed, which makes it impossible to add a second ID. Keep the
+  // raw text here, parse into formData.categories on change, and only
+  // re-sync from formData when it changes externally (edit, template
+  // pick, dialog reset).
+  const [categoriesText, setCategoriesText] = useState('');
+  useEffect(() => {
+    const parsedFromText = categoriesText
+      .split(',')
+      .map(c => parseInt(c.trim(), 10))
+      .filter(c => !isNaN(c));
+    const current = formData.categories || [];
+    const sameAsText =
+      parsedFromText.length === current.length &&
+      parsedFromText.every((v, i) => v === current[i]);
+    if (!sameAsText) {
+      setCategoriesText(current.join(', '));
+    }
+  }, [formData.categories]);
+
   // Helper function to convert component format to API format
   const toApiFormat = (indexer: Partial<Indexer>): Partial<ApiIndexer> => {
     const fields: { name: string; value: string | string[] }[] = [
@@ -733,9 +755,13 @@ export default function IndexersSettings() {
               <label className="block text-sm font-medium text-gray-300 mb-2">Category IDs</label>
               <input
                 type="text"
-                value={(formData.categories || []).join(', ')}
+                value={categoriesText}
                 onChange={(e) => {
-                  const cats = e.target.value.split(',').map(c => parseInt(c.trim())).filter(c => !isNaN(c));
+                  setCategoriesText(e.target.value);
+                  const cats = e.target.value
+                    .split(',')
+                    .map(c => parseInt(c.trim(), 10))
+                    .filter(c => !isNaN(c));
                   handleFormChange('categories', cats);
                 }}
                 className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-red-600"
