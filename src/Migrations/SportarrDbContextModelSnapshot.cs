@@ -289,6 +289,10 @@ namespace Sportarr.Api.Migrations
 
                     b.HasIndex("LeagueId");
 
+                    b.HasIndex(new[] { "LeagueId" }, "UX_ChannelLeagueMappings_PreferredPerLeague")
+                        .IsUnique()
+                        .HasFilter("\"IsPreferred\" = 1");
+
                     b.HasIndex("ChannelId", "LeagueId")
                         .IsUnique();
 

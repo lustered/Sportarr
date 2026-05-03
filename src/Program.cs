@@ -670,6 +670,11 @@ app.MapIndexerEndpoints();
 app.MapIptvEndpoints();
 app.MapEpgEndpoints();
 app.MapDvrEndpoints();
+// HDHomeRun tuner emulation - lets Plex DVR / Jellyfin Live TV /
+// Emby / Channels DVR auto-discover Sportarr's IPTV channels as a
+// network tuner. Endpoints are at root paths (/discover.json etc.)
+// per the SiliconDust HTTP API contract.
+app.MapHdHomeRunEndpoints();
 app.MapManualEventSearchEndpoints();
 app.MapLeagueEndpoints();
 app.MapFollowedTeamsAndTeamsEndpoints();

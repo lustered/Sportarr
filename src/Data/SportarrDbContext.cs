@@ -1094,6 +1094,16 @@ public class SportarrDbContext : DbContext
                   .OnDelete(DeleteBehavior.Cascade);
             entity.HasIndex(m => new { m.ChannelId, m.LeagueId }).IsUnique();
             entity.HasIndex(m => m.IsPreferred);
+
+            // At most one preferred channel per league. Without this,
+            // concurrent writes to /preferred-channel can leave the
+            // DB with two preferred rows for the same league and the
+            // event-DVR scheduler will pick whichever EF returns first.
+            // Filtered unique index on SQLite via HasFilter.
+            entity.HasIndex(m => m.LeagueId)
+                  .IsUnique()
+                  .HasFilter("\"IsPreferred\" = 1")
+                  .HasDatabaseName("UX_ChannelLeagueMappings_PreferredPerLeague");
         });
 
         // DvrRecording configuration

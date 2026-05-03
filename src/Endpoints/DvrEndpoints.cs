@@ -247,6 +247,21 @@ app.MapPost("/api/events/{eventId:int}/dvr/cancel", async (int eventId, EventDvr
     return Results.Ok(new { success = true });
 });
 
+// List candidate IPTV channels for an event ranked by confidence,
+// blending the metadata API's broadcast assertion (Event.Broadcast)
+// with the user's existing channel-league mappings and country
+// hints. Frontend uses this to render "Auto-record on..." pickers
+// and to surface match-quality warnings before an unattended
+// recording fires.
+app.MapGet("/api/events/{eventId:int}/channels/candidates", async (
+    int eventId,
+    EventChannelResolverService resolver,
+    CancellationToken ct) =>
+{
+    var ranked = await resolver.ResolveAsync(eventId, ct);
+    return Results.Ok(new { eventId, candidates = ranked });
+});
+
 // Import a completed DVR recording to the event library
 app.MapPost("/api/dvr/recordings/{recordingId:int}/import", async (int recordingId, EventDvrService eventDvrService) =>
 {

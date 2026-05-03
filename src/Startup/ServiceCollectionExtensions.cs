@@ -250,6 +250,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<XmltvParserService>();
         services.AddScoped<EpgService>();
         services.AddScoped<EpgSchedulingService>();
+        services.AddScoped<EventChannelResolverService>();
         services.AddScoped<FilteredExportService>();
 
         return services;
@@ -276,6 +277,10 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<DvrAutoSchedulerService>();
         services.AddHostedService(sp => sp.GetRequiredService<DvrAutoSchedulerService>());
+
+        // Reconciles DvrRecording.Status against actual ffmpeg state -
+        // catches crashes, app restarts, frozen upstream sources.
+        services.AddHostedService<DvrWatchdogService>();
 
         return services;
     }
