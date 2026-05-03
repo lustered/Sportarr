@@ -444,6 +444,99 @@ app.MapPost("/api/release/search", async (
     return Results.Ok(results);
 });
 
+// API: Fetch supported categories for an in-progress indexer config.
+// Used by the indexer edit form to render a Sonarr-style multi-select
+// of named categories rather than a free-text comma-separated ID box.
+// Takes the same payload shape as /api/indexer/test (Prowlarr-style
+// fields array) so the frontend can probe before save without
+// persisting anything.
+app.MapPost("/api/indexer/caps", async (
+    HttpRequest request,
+    IHttpClientFactory httpClientFactory,
+    ILoggerFactory loggerFactory,
+    ILogger<Program> logger) =>
+{
+    try
+    {
+        using var reader = new StreamReader(request.Body);
+        var json = await reader.ReadToEndAsync();
+        var apiIndexer = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(json);
+
+        var implementation = apiIndexer.TryGetProperty("implementation", out var implProp)
+            ? implProp.GetString()
+            : null;
+        var indexerType = ResolveIndexerType(implementation);
+
+        // Caps lookup only makes sense for Newznab/Torznab. Plain RSS
+        // feeds don't expose a /caps endpoint.
+        if (indexerType != IndexerType.Torznab && indexerType != IndexerType.Newznab)
+        {
+            return Results.BadRequest(new { success = false, message = "Caps lookup is only supported for Newznab and Torznab indexers." });
+        }
+
+        var probe = new Indexer
+        {
+            Name = apiIndexer.TryGetProperty("name", out var n) ? (n.GetString() ?? "Probe") : "Probe",
+            Type = indexerType,
+            Url = "",
+            ApiKey = ""
+        };
+
+        if (apiIndexer.TryGetProperty("fields", out var fields))
+        {
+            foreach (var field in fields.EnumerateArray())
+            {
+                var fieldName = field.GetProperty("name").GetString();
+                var fieldValue = field.GetProperty("value").GetString();
+                switch (fieldName)
+                {
+                    case "baseUrl":
+                        probe.Url = fieldValue?.TrimEnd('/') ?? "";
+                        break;
+                    case "apiPath":
+                        var apiPath = fieldValue ?? "/api";
+                        probe.ApiPath = apiPath.StartsWith('/') ? apiPath : $"/{apiPath}";
+                        break;
+                    case "apiKey":
+                        probe.ApiKey = fieldValue;
+                        break;
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(probe.Url))
+        {
+            return Results.BadRequest(new { success = false, message = "baseUrl is required to fetch categories." });
+        }
+
+        // Newznab and Torznab share the same caps XML schema, so we
+        // route both through TorznabClient.GetCapabilitiesAsync. Caps
+        // lookup doesn't need quality detection, so we omit it.
+        var httpClient = httpClientFactory.CreateClient("IndexerClient");
+        var torznabLogger = loggerFactory.CreateLogger<TorznabClient>();
+        var client = new TorznabClient(httpClient, torznabLogger);
+
+        var caps = await client.GetCapabilitiesAsync(probe);
+        if (caps == null)
+        {
+            return Results.BadRequest(new { success = false, message = "Could not reach the indexer's caps endpoint. Check the URL and API key." });
+        }
+
+        var categoryDtos = caps.Categories
+            .Where(c => !string.IsNullOrWhiteSpace(c.Id) && !string.IsNullOrWhiteSpace(c.Name))
+            .Select(c => new { id = c.Id, name = c.Name })
+            .ToList();
+
+        logger.LogInformation("[INDEXER CAPS] Fetched {Count} categories from {Url}", categoryDtos.Count, probe.Url);
+        return Results.Ok(new { success = true, categories = categoryDtos });
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "[INDEXER CAPS] Error fetching caps: {Message}", ex.Message);
+        return Results.BadRequest(new { success = false, message = $"Failed to fetch categories: {ex.Message}" });
+    }
+});
+
 // API: Test indexer connection
 app.MapPost("/api/indexer/test", async (
     HttpRequest request,

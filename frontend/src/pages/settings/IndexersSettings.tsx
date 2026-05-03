@@ -3,7 +3,7 @@ import { PlusIcon, PencilIcon, TrashIcon, CheckCircleIcon, XCircleIcon, Magnifyi
 import { toast } from 'sonner';
 import { useIndexers, useCreateIndexer, useUpdateIndexer, useDeleteIndexer, useBulkDeleteIndexers } from '../../api/hooks';
 import type { Indexer as ApiIndexer } from '../../types';
-import { apiGet, apiPut } from '../../utils/api';
+import { apiGet, apiPut, apiPost } from '../../utils/api';
 import apiClient from '../../api/client';
 import SettingsHeader from '../../components/SettingsHeader';
 import { useUnsavedChanges } from '../../hooks/useUnsavedChanges';
@@ -334,12 +334,12 @@ export default function IndexersSettings() {
   };
 
   // Free-text mirror for the comma-separated category IDs input.
-  // We can't derive the input value from formData.categories.join(','):
-  // re-parsing on every keystroke strips the trailing comma the user
-  // just typed, which makes it impossible to add a second ID. Keep the
-  // raw text here, parse into formData.categories on change, and only
-  // re-sync from formData when it changes externally (edit, template
-  // pick, dialog reset).
+  // Used as a fallback when the indexer's caps endpoint can't be
+  // reached (offline, missing API key, plain RSS, etc.). Otherwise the
+  // categories input renders as a Sonarr-style MultiSelect populated
+  // from caps. Keeping the raw text in state separately avoids the
+  // round-trip bug where re-parsing on every keystroke strips a
+  // trailing comma the user just typed.
   const [categoriesText, setCategoriesText] = useState('');
   useEffect(() => {
     const parsedFromText = categoriesText
@@ -354,6 +354,81 @@ export default function IndexersSettings() {
       setCategoriesText(current.join(', '));
     }
   }, [formData.categories]);
+
+  // Caps-driven category options. Sonarr renders the indexer's
+  // self-reported categories as a named multi-select instead of asking
+  // users to memorize numeric IDs. We mirror that: probe the indexer's
+  // /caps endpoint (newznab/torznab share the same XML schema) and use
+  // the result to populate a MultiSelect. Fall back to the text input
+  // when caps are unavailable so the form still works for sites
+  // without a reachable caps endpoint.
+  const [categoriesCaps, setCategoriesCaps] = useState<Array<{ id: string; name: string }> | null>(null);
+  const [capsLoading, setCapsLoading] = useState(false);
+  const [capsError, setCapsError] = useState<string | null>(null);
+
+  const implementation = formData.implementation || '';
+  const supportsCaps = implementation === 'Newznab' || implementation === 'Torznab' ||
+    // Other Torznab-compatible templates (TorrentLeech, IPTorrents, etc.)
+    // all expose a Newznab-style /caps endpoint.
+    selectedTemplate?.protocol === 'torrent' && implementation !== 'Rss';
+  const capsKey = `${implementation}|${formData.baseUrl || ''}|${formData.apiPath || ''}|${formData.apiKey || ''}`;
+
+  useEffect(() => {
+    if (!showAddModal) return;
+    if (!supportsCaps) {
+      setCategoriesCaps(null);
+      setCapsError(null);
+      return;
+    }
+    if (!formData.baseUrl) {
+      setCategoriesCaps(null);
+      setCapsError(null);
+      return;
+    }
+
+    let cancelled = false;
+    const handle = setTimeout(async () => {
+      setCapsLoading(true);
+      setCapsError(null);
+      try {
+        const fields = [
+          { name: 'baseUrl', value: formData.baseUrl || '' },
+          { name: 'apiPath', value: formData.apiPath || '/api' },
+          { name: 'apiKey', value: formData.apiKey || '' },
+        ];
+        const res = await apiPost('/api/indexer/caps', {
+          name: formData.name || 'Probe',
+          implementation,
+          fields,
+        });
+        if (cancelled) return;
+        if (res.ok) {
+          const data = await res.json();
+          setCategoriesCaps(Array.isArray(data.categories) ? data.categories : []);
+          setCapsError(null);
+        } else {
+          let msg = 'Could not load categories from indexer.';
+          try {
+            const err = await res.json();
+            if (err?.message) msg = err.message;
+          } catch { /* ignore */ }
+          setCategoriesCaps(null);
+          setCapsError(msg);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setCategoriesCaps(null);
+        setCapsError(err instanceof Error ? err.message : 'Failed to fetch categories');
+      } finally {
+        if (!cancelled) setCapsLoading(false);
+      }
+    }, 600);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [showAddModal, supportsCaps, capsKey]);
 
   // Helper function to convert component format to API format
   const toApiFormat = (indexer: Partial<Indexer>): Partial<ApiIndexer> => {
@@ -752,24 +827,47 @@ export default function IndexersSettings() {
             <h4 className="text-lg font-semibold text-white">Categories</h4>
 
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">Category IDs</label>
-              <input
-                type="text"
-                value={categoriesText}
-                onChange={(e) => {
-                  setCategoriesText(e.target.value);
-                  const cats = e.target.value
-                    .split(',')
-                    .map(c => parseInt(c.trim(), 10))
-                    .filter(c => !isNaN(c));
-                  handleFormChange('categories', cats);
-                }}
-                className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-red-600"
-                placeholder="5000, 5030, 5040 (combat sports categories)"
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                Comma-separated category IDs. Leave empty to search all categories.
-              </p>
+              <label className="block text-sm font-medium text-gray-300 mb-2">Categories</label>
+              {categoriesCaps && categoriesCaps.length > 0 ? (
+                <>
+                  <MultiSelect<number>
+                    options={categoriesCaps
+                      .map(c => ({ value: parseInt(c.id, 10), label: c.name, hint: c.id }))
+                      .filter(o => !isNaN(o.value))
+                      .sort((a, b) => a.value - b.value)}
+                    value={formData.categories || []}
+                    onChange={(next) => handleFormChange('categories', next)}
+                    placeholder={capsLoading ? 'Loading categories…' : 'Select categories...'}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Pick categories the indexer should be searched in. Leave empty to use all categories.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <input
+                    type="text"
+                    value={categoriesText}
+                    onChange={(e) => {
+                      setCategoriesText(e.target.value);
+                      const cats = e.target.value
+                        .split(',')
+                        .map(c => parseInt(c.trim(), 10))
+                        .filter(c => !isNaN(c));
+                      handleFormChange('categories', cats);
+                    }}
+                    className="w-full px-4 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white focus:outline-none focus:border-red-600"
+                    placeholder="5000, 5030, 5040 (combat sports categories)"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    {capsLoading
+                      ? 'Loading categories from indexer…'
+                      : capsError
+                        ? `${capsError} Falling back to manual entry: comma-separated category IDs.`
+                        : 'Comma-separated category IDs. Leave empty to search all categories.'}
+                  </p>
+                </>
+              )}
             </div>
 
           </div>
