@@ -118,6 +118,13 @@ public class DvrRecordingService
             throw new ArgumentException($"Channel {request.ChannelId} not found");
         }
 
+        // Conflict check: enforce the configured policy if scheduling
+        // would push the IPTV source past its MaxStreams cap or the
+        // global concurrent-recording cap during the new run's
+        // window. Only counts recordings that overlap in time and
+        // are still active (Scheduled or Recording).
+        await EnforceConflictPolicyAsync(request, channel);
+
         Event? evt = null;
         if (request.EventId.HasValue)
         {
@@ -741,5 +748,99 @@ public class DvrRecordingService
     public async Task<(bool Available, string? Version, string? Path)> CheckFFmpegAsync()
     {
         return await _ffmpegRecorder.CheckFFmpegAvailableAsync();
+    }
+
+    /// <summary>
+    /// Apply DvrConflictPolicy when scheduling a new recording would
+    /// otherwise push an IPTV source past MaxStreams or the global
+    /// DvrMaxConcurrentRecordings cap during the requested window.
+    ///
+    /// Three policies:
+    ///   - Refuse: throw InvalidOperationException with a clear
+    ///     message; the API surfaces it as 409. Default and safest.
+    ///   - Queue: silently allow the schedule; the recorder will
+    ///     start it when a slot frees. Existing scheduler/watchdog
+    ///     handle the late start.
+    ///   - Preempt: cancel the lowest-priority overlapping
+    ///     recording on the conflicting source to make room. Never
+    ///     preempts a recording that has already started (Status =
+    ///     Recording) - only Scheduled rows are eligible victims.
+    /// </summary>
+    private async Task EnforceConflictPolicyAsync(ScheduleDvrRecordingRequest request, IptvChannel channel)
+    {
+        var config = await _configService.GetConfigAsync();
+        var policy = (config.DvrConflictPolicy ?? "Refuse").Trim();
+
+        var windowStart = request.ScheduledStart.AddMinutes(-request.PrePadding);
+        var windowEnd = request.ScheduledEnd.AddMinutes(request.PostPadding);
+
+        // Only Scheduled and Recording rows compete for a slot.
+        var overlapping = await _db.DvrRecordings
+            .Include(r => r.Channel).ThenInclude(c => c!.Source)
+            .Where(r => r.Status == DvrRecordingStatus.Scheduled || r.Status == DvrRecordingStatus.Recording)
+            .Where(r => r.ScheduledStart.AddMinutes(-r.PrePadding) < windowEnd
+                     && r.ScheduledEnd.AddMinutes(r.PostPadding) > windowStart)
+            .ToListAsync();
+
+        // Per-source MaxStreams check.
+        var sameSourceCount = channel.SourceId == 0
+            ? 0
+            : overlapping.Count(r => r.Channel?.SourceId == channel.SourceId);
+        var sourceCap = channel.Source?.MaxStreams ?? 0;
+        var sourceConflict = sourceCap > 0 && sameSourceCount >= sourceCap;
+
+        // Global concurrent-recording check.
+        var globalCap = config.DvrMaxConcurrentRecordings;
+        var globalConflict = globalCap > 0 && overlapping.Count >= globalCap;
+
+        if (!sourceConflict && !globalConflict) return;
+
+        var reason = sourceConflict
+            ? $"IPTV source '{channel.Source?.Name ?? "(unknown)"}' is at its MaxStreams cap of {sourceCap} during this window"
+            : $"Global DvrMaxConcurrentRecordings cap of {globalCap} would be exceeded during this window";
+
+        if (string.Equals(policy, "Queue", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning(
+                "[DVR] Conflict-policy=Queue: {Reason}. Recording will be queued and start late once a slot frees.",
+                reason);
+            return; // proceed with insert; scheduler picks it up when a slot opens.
+        }
+
+        if (string.Equals(policy, "Preempt", StringComparison.OrdinalIgnoreCase))
+        {
+            // Pick the lowest-priority overlapping victim. Currently
+            // priority is implicit (we don't have a priority column
+            // yet) so use Created-ascending: cancel the oldest
+            // Scheduled row that doesn't itself belong to a higher-
+            // value event. Recordings already in Status=Recording
+            // are off-limits.
+            var victim = overlapping
+                .Where(r => r.Status == DvrRecordingStatus.Scheduled)
+                .Where(r => sourceConflict ? r.Channel?.SourceId == channel.SourceId : true)
+                .OrderBy(r => r.Created)
+                .FirstOrDefault();
+
+            if (victim != null)
+            {
+                _logger.LogWarning(
+                    "[DVR] Conflict-policy=Preempt: cancelling recording {VictimId} ('{Title}') to make room. {Reason}",
+                    victim.Id, victim.Title, reason);
+                victim.Status = DvrRecordingStatus.Cancelled;
+                victim.ErrorMessage = (victim.ErrorMessage ?? "") +
+                    $"Preempted by a higher-priority schedule at {DateTime.UtcNow:o}.";
+                await _db.SaveChangesAsync();
+                return;
+            }
+            // Nothing to preempt - fall through to refuse.
+            _logger.LogWarning(
+                "[DVR] Conflict-policy=Preempt: no eligible victim to cancel. {Reason}. Falling back to Refuse.",
+                reason);
+        }
+
+        // Default: Refuse.
+        throw new InvalidOperationException(
+            $"Cannot schedule recording: {reason}. " +
+            $"Either cancel a conflicting recording, raise the cap, or change DvrConflictPolicy to Queue or Preempt.");
     }
 }

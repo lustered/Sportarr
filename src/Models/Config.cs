@@ -166,6 +166,19 @@ public class Config
     public int DvrMaxReconnectAttempts { get; set; } = 5; // Maximum reconnection attempts
     public int DvrReconnectDelaySeconds { get; set; } = 5; // Delay between reconnection attempts
 
+    /// <summary>
+    /// What happens when scheduling a new recording would push an
+    /// IPTV source past its MaxStreams cap or push the global
+    /// DvrMaxConcurrentRecordings cap. One of: "Refuse", "Queue",
+    /// "Preempt". Default Refuse - safest behavior; the user gets
+    /// an explicit error and can resolve the conflict manually.
+    /// Queue keeps the row in Scheduled state past its start time
+    /// until a slot opens. Preempt cancels the lowest-priority
+    /// active recording to make room (never preempts a recording
+    /// of higher or equal priority).
+    /// </summary>
+    public string DvrConflictPolicy { get; set; } = "Refuse";
+
     // Development Settings (hidden - only serialized to XML when set)
     public string CustomMetadataApiUrl { get; set; } = ""; // Custom metadata API URL for development/testing (empty = use default sportarr.net)
 

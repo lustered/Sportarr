@@ -129,6 +129,14 @@ app.MapPost("/api/dvr/recordings", async (ScheduleDvrRecordingRequest request, D
     {
         return Results.BadRequest(new { error = ex.Message });
     }
+    catch (InvalidOperationException ex)
+    {
+        // Conflict-policy=Refuse fires this when MaxStreams or
+        // DvrMaxConcurrentRecordings would be exceeded. 409 lets
+        // the UI render a "conflict" state distinct from generic
+        // 4xx so the user can choose to override.
+        return Results.Conflict(new { error = ex.Message });
+    }
 }).WithRequestValidation<ScheduleDvrRecordingRequest>();
 
 // Update a scheduled recording
@@ -450,6 +458,7 @@ app.MapGet("/api/dvr/settings", async (ConfigService configService) =>
         prePaddingMinutes = config.DvrPrePaddingMinutes,
         postPaddingMinutes = config.DvrPostPaddingMinutes,
         maxConcurrentRecordings = config.DvrMaxConcurrentRecordings,
+        conflictPolicy = config.DvrConflictPolicy,
         deleteAfterImport = config.DvrDeleteAfterImport,
         recordingRetentionDays = config.DvrRecordingRetentionDays,
         hardwareAcceleration = config.DvrHardwareAcceleration,
@@ -488,6 +497,17 @@ app.MapPut("/api/dvr/settings", async (HttpRequest request, ConfigService config
         config.DvrPostPaddingMinutes = postPadding.GetInt32();
     if (settings.TryGetProperty("maxConcurrentRecordings", out var maxConcurrent))
         config.DvrMaxConcurrentRecordings = maxConcurrent.GetInt32();
+    if (settings.TryGetProperty("conflictPolicy", out var conflictPolicyJson))
+    {
+        var v = conflictPolicyJson.GetString();
+        // Whitelist - reject unknown policy strings to keep the
+        // service-side switch deterministic.
+        config.DvrConflictPolicy = v switch
+        {
+            "Refuse" or "Queue" or "Preempt" => v!,
+            _ => "Refuse"
+        };
+    }
     if (settings.TryGetProperty("deleteAfterImport", out var deleteAfter))
         config.DvrDeleteAfterImport = deleteAfter.GetBoolean();
     if (settings.TryGetProperty("recordingRetentionDays", out var retention))
