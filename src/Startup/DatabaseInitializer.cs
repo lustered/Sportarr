@@ -231,6 +231,33 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify Leagues.RootFolderId column: {ex.Message}");
         }
 
+        // Backfill Events.BroadcastDate for legacy rows that were
+        // synced via lookup/search/team-schedule/livescore code paths
+        // before BroadcastDate was populated everywhere. Without a
+        // BroadcastDate, EventQueryService falls back to the UTC
+        // EventDate.Date, which produces a wrong-month query for
+        // late-Eastern games whose UTC instant rolls over to the
+        // next day (the user's NHL Ducks/Oilers Game 6 case:
+        // 2am BST event was titled with 30.04 in the release file
+        // but Sportarr queried 05 because EventDate is 2026-05-01Z).
+        // Use UTC EventDate.Date as the backfill - the next normal
+        // sync will replace it with the correct venue-local date if
+        // the API supplies one. Idempotent.
+        try
+        {
+            var rows = db.Database.ExecuteSqlRaw(
+                "UPDATE Events SET BroadcastDate = date(EventDate) " +
+                "WHERE BroadcastDate IS NULL AND EventDate IS NOT NULL");
+            if (rows > 0)
+            {
+                Console.WriteLine($"[Sportarr] Backfilled BroadcastDate on {rows} legacy event row(s)");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not backfill Events.BroadcastDate: {ex.Message}");
+        }
+
         // Normalize Leagues.Sport casing. The upstream metadata API
         // is inconsistent on this column - some leagues ship as
         // "Motorsport" and a handful as "MotorSport", which renders

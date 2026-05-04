@@ -322,10 +322,26 @@ public class ReleaseMatchScorer
         }
 
         // Round number match.
-        // CRITICAL: when the event AND the release both carry a round number they
-        // MUST agree, regardless of sport. Round 1 should never match Round 2.
-        // Source of the event round: evt.Round (motorsport, structured) OR the event
-        // title (golf "The Masters Round 1", snooker etc.).
+        // Two semantic conventions collide on the integer round
+        // field:
+        //   * Release filenames use "Round N" / "Week N" for the
+        //     position of the event within the season, typically
+        //     1-50 across every sport (motorsport rounds, NFL
+        //     weeks, soccer matchdays, playoff round 1-4 in
+        //     colloquial usage).
+        //   * Some metadata sources encode categorical info into
+        //     the integer round field (notably TheSportsDB stores
+        //     125/150/175/200 for the four NHL/NBA playoff stages).
+        //     Those aren't round numbers, just encoded category
+        //     ids that happen to be ints.
+        //
+        // Equality is a hard reject only when both sides are in
+        // the realistic-round range (<= MaxRealisticRoundNumber).
+        // Outside that range the two numbers are using different
+        // schemes and direct comparison is meaningless - skip the
+        // round signal and let team match, date match, and game
+        // number match (below) carry the disambiguation.
+        const int MaxRealisticRoundNumber = 50;
         var eventRound = !string.IsNullOrEmpty(evt.Round) ? ExtractRoundNumber(evt.Round) : null;
         if (!eventRound.HasValue && !string.IsNullOrEmpty(evt.Title))
         {
@@ -333,12 +349,29 @@ public class ReleaseMatchScorer
             if (titleRoundMatch.Success && int.TryParse(titleRoundMatch.Groups[1].Value, out var titleRound))
                 eventRound = titleRound;
         }
-        if (eventRound.HasValue && parsed.RoundNumber.HasValue)
+        if (eventRound.HasValue && parsed.RoundNumber.HasValue
+            && eventRound.Value <= MaxRealisticRoundNumber
+            && parsed.RoundNumber.Value <= MaxRealisticRoundNumber)
         {
             if (parsed.RoundNumber == eventRound)
                 score += IsRoundBasedSport(eventSportPrefix) ? 25 : 15;
             else
-                return 0; // Wrong round - reject immediately (Round 19 != Round 22, Masters R1 != R2)
+                return 0; // Real round mismatch (Round 19 != Round 22, Masters R1 != R2)
+        }
+
+        // Game-number match for series-format sports.
+        // Independent of the round-number scheme above. NHL/NBA
+        // playoff releases reliably carry "Game N" alongside
+        // "Round N", and Event.EpisodeNumber is populated as the
+        // game-within-series counter. Mismatch is a strong
+        // wrong-game signal: two games of the same series can't
+        // be the same release file.
+        if (parsed.GameNumber.HasValue && evt.EpisodeNumber.HasValue)
+        {
+            if (parsed.GameNumber.Value == evt.EpisodeNumber.Value)
+                score += 10;
+            else
+                return 0; // Wrong game in the series - reject
         }
 
         // Location matching (for motorsport)
@@ -408,6 +441,15 @@ public class ReleaseMatchScorer
         var roundMatch = Regex.Match(title, @"(?:Round|R|Week|W)[\.\s]*(\d{1,2})\b", RegexOptions.IgnoreCase);
         if (roundMatch.Success)
             parsed.RoundNumber = int.Parse(roundMatch.Groups[1].Value);
+
+        // Extract game number for series-format playoff releases
+        // ("NHL SC 2026 Round 1 Game 6 ..."). When both this and the
+        // event's stored EpisodeNumber are present, mismatch is a
+        // reliable wrong-game signal independent of any round-number
+        // scheme conflict.
+        var gameMatch = Regex.Match(title, @"\bGame[\.\s_-]*(\d{1,2})\b", RegexOptions.IgnoreCase);
+        if (gameMatch.Success && int.TryParse(gameMatch.Groups[1].Value, out var gameNum))
+            parsed.GameNumber = gameNum;
 
         // Extract date (YYYY.MM.DD or YYYY-MM-DD)
         var dateMatch = Regex.Match(title, @"\b(20[2-9]\d)[.\-](\d{2})[.\-](\d{2})\b");
@@ -1475,6 +1517,14 @@ public class ReleaseMatchScorer
         public int? Month { get; set; }
         public int? Day { get; set; }
         public int? RoundNumber { get; set; }
+        /// <summary>
+        /// Game number within a playoff series ("Game 6" in
+        /// "NHL SC 2026 Round 1 Game 6"). Compared against
+        /// Event.EpisodeNumber for series-format sports as a hard
+        /// disambiguator that doesn't depend on the round-number
+        /// scheme matching across release and event.
+        /// </summary>
+        public int? GameNumber { get; set; }
         public string? SportPrefix { get; set; }
     }
 }

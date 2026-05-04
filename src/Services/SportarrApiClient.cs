@@ -127,6 +127,34 @@ public class SportarrApiClient
     }
 
     /// <summary>
+    /// Populate Event.BroadcastDate from the API's dateEvent
+    /// (venue-local date) on every event that hasn't already had
+    /// it set. The metadata API delivers the venue-local date as
+    /// dateEvent and the UTC instant as strTimestamp; without this
+    /// fallback, events synced via lookup/search/team-schedule/
+    /// livescore endpoints get BroadcastDate=null and downstream
+    /// query builders fall back to UTC, which produces the wrong
+    /// month/day for late-Eastern games whose UTC instant rolls
+    /// over to the next day. EventQueryService and ReleaseMatchScorer
+    /// both treat BroadcastDate as authoritative.
+    /// </summary>
+    private static void ApplyBroadcastDateFallback(IEnumerable<Event>? events)
+    {
+        if (events == null) return;
+        foreach (var evt in events) ApplyBroadcastDateFallback(evt);
+    }
+
+    private static void ApplyBroadcastDateFallback(Event? evt)
+    {
+        if (evt == null) return;
+        if (evt.BroadcastDate.HasValue) return;
+        if (evt.DateEventFallback != DateTime.MinValue)
+            evt.BroadcastDate = evt.DateEventFallback.Date;
+        else if (evt.EventDate != DateTime.MinValue)
+            evt.BroadcastDate = evt.EventDate.Date;
+    }
+
+    /// <summary>
     /// Search for events by name
     /// </summary>
     public async Task<List<Event>?> SearchEventAsync(string query)
@@ -139,7 +167,9 @@ public class SportarrApiClient
 
             var json = await response.Content.ReadAsStringAsync();
             var result = JsonSerializer.Deserialize<SportarrApiSearchResponse<Event>>(json, _jsonOptions);
-            return result?.Data?.Search;
+            var events = result?.Data?.Search;
+            ApplyBroadcastDateFallback(events);
+            return events;
         }
         catch (Exception ex)
         {
@@ -231,7 +261,9 @@ public class SportarrApiClient
 
             var json = await response.Content.ReadAsStringAsync();
             var result = JsonSerializer.Deserialize<SportarrApiResponse<Event>>(json, _jsonOptions);
-            return result?.Data?.FirstOrDefault();
+            var evt = result?.Data?.FirstOrDefault();
+            ApplyBroadcastDateFallback(evt);
+            return evt;
         }
         catch (Exception ex)
         {
@@ -257,7 +289,9 @@ public class SportarrApiClient
 
             var json = await response.Content.ReadAsStringAsync();
             var result = JsonSerializer.Deserialize<SportarrApiResponse<Event>>(json, _jsonOptions);
-            return result?.Data;
+            var events = result?.Data;
+            ApplyBroadcastDateFallback(events);
+            return events;
         }
         catch (Exception ex)
         {
@@ -279,7 +313,9 @@ public class SportarrApiClient
 
             var json = await response.Content.ReadAsStringAsync();
             var result = JsonSerializer.Deserialize<SportarrApiResponse<Event>>(json, _jsonOptions);
-            return result?.Data;
+            var events = result?.Data;
+            ApplyBroadcastDateFallback(events);
+            return events;
         }
         catch (Exception ex)
         {
@@ -555,7 +591,9 @@ public class SportarrApiClient
 
             var json = await response.Content.ReadAsStringAsync();
             var result = JsonSerializer.Deserialize<SportarrApiResponse<Event>>(json, _jsonOptions);
-            return result?.Data;
+            var events = result?.Data;
+            ApplyBroadcastDateFallback(events);
+            return events;
         }
         catch (Exception ex)
         {
@@ -577,7 +615,9 @@ public class SportarrApiClient
 
             var json = await response.Content.ReadAsStringAsync();
             var result = JsonSerializer.Deserialize<SportarrApiResponse<Event>>(json, _jsonOptions);
-            return result?.Data;
+            var events = result?.Data;
+            ApplyBroadcastDateFallback(events);
+            return events;
         }
         catch (Exception ex)
         {
