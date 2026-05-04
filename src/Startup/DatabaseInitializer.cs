@@ -231,6 +231,47 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify Leagues.RootFolderId column: {ex.Message}");
         }
 
+        // Normalize Leagues.Sport casing. The upstream metadata API
+        // is inconsistent on this column - some leagues ship as
+        // "Motorsport" and a handful as "MotorSport", which renders
+        // as two separate sport chips on the Add League page (the
+        // filter dedups by string equality, not case-insensitively).
+        // Canonicalize known case-variants once at startup so the
+        // chip list stays single-entry without code paths having to
+        // handle both shapes downstream. Idempotent - the COLLATE
+        // NOCASE comparison only matches rows whose case differs
+        // from the canonical form.
+        try
+        {
+            var sportCanonicals = new[]
+            {
+                "Motorsport",
+                "Soccer",
+                "American Football",
+                "Basketball",
+                "Baseball",
+                "Ice Hockey",
+                "Fighting",
+                "Rugby",
+                "Cricket",
+                "Tennis",
+                "Golf",
+            };
+            foreach (var canonical in sportCanonicals)
+            {
+                var rowsAffected = db.Database.ExecuteSqlRaw(
+                    $"UPDATE Leagues SET Sport = '{canonical}' WHERE Sport = '{canonical}' COLLATE NOCASE AND Sport != '{canonical}'");
+                if (rowsAffected > 0)
+                {
+                    Console.WriteLine($"[Sportarr] Normalized {rowsAffected} Leagues.Sport row(s) to '{canonical}'");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not normalize Leagues.Sport casing: {ex.Message}");
+        }
+
         // Ensure the plain-RSS indexer columns exist on Indexers. Added so
         // the Generic Torrent RSS Feed indexer type can persist its
         // auto-detected parser config (size source, ezRSS format flag,
