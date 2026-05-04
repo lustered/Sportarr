@@ -359,20 +359,19 @@ public class ReleaseMatchScorer
                 return 0; // Real round mismatch (Round 19 != Round 22, Masters R1 != R2)
         }
 
-        // Game-number match for series-format sports.
-        // Independent of the round-number scheme above. NHL/NBA
-        // playoff releases reliably carry "Game N" alongside
-        // "Round N", and Event.EpisodeNumber is populated as the
-        // game-within-series counter. Mismatch is a strong
-        // wrong-game signal: two games of the same series can't
-        // be the same release file.
-        if (parsed.GameNumber.HasValue && evt.EpisodeNumber.HasValue)
-        {
-            if (parsed.GameNumber.Value == evt.EpisodeNumber.Value)
-                score += 10;
-            else
-                return 0; // Wrong game in the series - reject
-        }
+        // NOTE: ParsedRelease.GameNumber ("Game 6" in
+        // "NHL SC 2026 Round 1 Game 6") is intentionally NOT
+        // compared against Event.EpisodeNumber here. They use
+        // different schemes: release filenames count games
+        // within a playoff series (1-7), while Event.EpisodeNumber
+        // is Sportarr's chronological position-within-season
+        // counter (often 80+ for a mid-season game). A hard
+        // compare would falsely reject every series-format
+        // release. The data is parsed and retained on
+        // ParsedRelease for future use once a real
+        // game-within-series field exists on Event - until then,
+        // year + date + team matching carry the wrong-game
+        // disambiguation.
 
         // Location matching (for motorsport)
         // CRITICAL: Location matching can return negative scores for wrong locations
