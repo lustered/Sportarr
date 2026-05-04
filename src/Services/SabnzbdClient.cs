@@ -624,11 +624,23 @@ public class SabnzbdClient
                         failMessage.Contains("unpack failed") ||
                         failMessage.Contains("moving failed");
 
+                    // Script failure is a narrow category: ONLY when SAB
+                    // says the user-configured post-processing script
+                    // failed but the download itself completed cleanly.
+                    // The previous heuristic matched any message
+                    // containing "aborted", which silently captured
+                    // SAB's own "Aborted, cannot be completed" message
+                    // (which means articles missing from the provider -
+                    // a real failure, no usable data on disk). Tighten
+                    // to phrases that unambiguously refer to a user
+                    // script.
                     var isPostProcessingScriptFailure =
                         !isRepairFailure && !isUnpackOrMoveFailure &&
-                        (failMessage.Contains("post") ||
-                         failMessage.Contains("script") ||
-                         failMessage.Contains("aborted"));
+                        (failMessage.Contains("post-processing script") ||
+                         failMessage.Contains("post processing script") ||
+                         failMessage.Contains("user script") ||
+                         failMessage.Contains("script failed") ||
+                         failMessage.Contains("script error"));
 
                     if (isRepairFailure)
                     {
@@ -711,11 +723,17 @@ public class SabnzbdClient
             // list when the id isn't there), so calling both costs at most one
             // extra HTTP roundtrip and guarantees the entry is gone regardless of
             // which store it lives in.
+            // Both delete URLs need output=json so SABnzbd returns
+            // {"status":true,"nzo_ids":[...]}; without it SAB defaults
+            // to text/plain "ok\n" or HTML, JsonDocument.Parse throws
+            // in DeletionTouched, the catch silently returns false,
+            // and this method warns "neither queue nor history
+            // acknowledged" even when the deletion succeeded.
             var deletedFromAnything = false;
             var mode = deleteFiles ? "delete" : "remove";
             var delFilesParam = deleteFiles ? "&del_files=1" : "";
 
-            var queueResponse = await SendApiRequestAsync(config, $"?mode=queue&name={mode}&value={nzoId}{delFilesParam}");
+            var queueResponse = await SendApiRequestAsync(config, $"?mode=queue&name={mode}&value={nzoId}{delFilesParam}&output=json");
             if (DeletionTouched(queueResponse, nzoId))
             {
                 _logger.LogInformation("[SABnzbd] Removed {NzoId} from queue", nzoId);
@@ -723,11 +741,12 @@ public class SabnzbdClient
             }
             else
             {
-                _logger.LogDebug("[SABnzbd] Queue delete reported no change for {NzoId} (likely already in history)", nzoId);
+                _logger.LogDebug("[SABnzbd] Queue delete reported no change for {NzoId} (likely already in history). Raw response: {Response}",
+                    nzoId, TruncateForLog(queueResponse));
             }
 
             var historyDelFilesParam = deleteFiles ? "&del_files=1" : "";
-            var historyResponse = await SendApiRequestAsync(config, $"?mode=history&name=delete&value={nzoId}{historyDelFilesParam}");
+            var historyResponse = await SendApiRequestAsync(config, $"?mode=history&name=delete&value={nzoId}{historyDelFilesParam}&output=json");
             if (DeletionTouched(historyResponse, nzoId))
             {
                 _logger.LogInformation("[SABnzbd] Removed {NzoId} from history", nzoId);
@@ -735,12 +754,18 @@ public class SabnzbdClient
             }
             else
             {
-                _logger.LogDebug("[SABnzbd] History delete reported no change for {NzoId}", nzoId);
+                _logger.LogDebug("[SABnzbd] History delete reported no change for {NzoId}. Raw response: {Response}",
+                    nzoId, TruncateForLog(historyResponse));
             }
 
             if (!deletedFromAnything)
             {
-                _logger.LogWarning("[SABnzbd] Neither queue nor history acknowledged deletion of {NzoId} — already gone, or SABnzbd did not return the id in nzo_ids", nzoId);
+                // Log the raw bodies when the warning fires - this is
+                // the only diagnostic we'll have if SAB returns
+                // something unexpected. Capped at 500 chars per body.
+                _logger.LogWarning(
+                    "[SABnzbd] Neither queue nor history acknowledged deletion of {NzoId} - already gone, or SAB returned an unexpected shape. queue={Queue} history={History}",
+                    nzoId, TruncateForLog(queueResponse), TruncateForLog(historyResponse));
             }
 
             return deletedFromAnything;
@@ -759,6 +784,20 @@ public class SabnzbdClient
     /// matching to remove. Returns true only when the requested id appears
     /// in the returned list.
     /// </summary>
+    /// <summary>
+    /// Truncate a response body for log output. Keeps the head of
+    /// any unexpected response (HTML error page, plain "ok", whatever
+    /// SAB version-specific quirk) so we have something to diagnose
+    /// against when the deletion-not-acknowledged warning fires.
+    /// </summary>
+    private static string TruncateForLog(string? response)
+    {
+        if (string.IsNullOrEmpty(response)) return "(empty)";
+        const int maxLen = 500;
+        var trimmed = response.Trim();
+        return trimmed.Length <= maxLen ? trimmed : trimmed.Substring(0, maxLen) + "...";
+    }
+
     private static bool DeletionTouched(string? response, string nzoId)
     {
         if (string.IsNullOrEmpty(response)) return false;

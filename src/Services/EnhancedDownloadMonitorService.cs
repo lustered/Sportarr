@@ -205,11 +205,31 @@ public class EnhancedDownloadMonitorService : BackgroundService
             _logger.LogDebug("[Enhanced Download Monitor] Retrying import for pending download: {Title} (attempt {Count})",
                 download.Title, (download.ImportRetryCount ?? 0) + 1);
 
+            // Capture the status before the import retry so we can
+            // detect the same Failed transition the long path
+            // handles below. Without this, when attempt N/N flips
+            // status to Failed inside HandleCompletedDownload, the
+            // early `return` on the next line skips the
+            // HandleFailedDownload call at line 414 and the
+            // download silently rots in Failed state with no
+            // blocklist entry, no re-search, and no notification.
+            var previousImportPendingStatus = download.Status;
             await HandleCompletedDownload(
                 download,
                 downloadClientService,
                 fileImportService,
                 db);
+
+            if (download.Status == DownloadStatus.Failed
+                && previousImportPendingStatus != DownloadStatus.Failed)
+            {
+                await HandleFailedDownload(
+                    download,
+                    downloadClientService,
+                    db,
+                    redownloadFailed,
+                    redownloadFailedFromInteractive);
+            }
             return;
         }
 
