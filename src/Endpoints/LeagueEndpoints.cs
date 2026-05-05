@@ -1323,9 +1323,16 @@ app.MapPost("/api/leagues", async (HttpContext context, SportarrDbContext db, IS
                 using var scope = scopeFactory.CreateScope();
                 var syncService = scope.ServiceProvider.GetRequiredService<LeagueEventSyncService>();
 
-                // fullHistoricalSync=true: Get ALL seasons so users have complete event history
-                // This only happens on initial league add - scheduled syncs use optimized mode
-                var syncResult = await syncService.SyncLeagueEventsAsync(leagueId, seasons: null, fullHistoricalSync: true);
+                // fullHistoricalSync=true: Get ALL seasons so users have complete event history.
+                // forceRefresh=true: this is a user-initiated league add — they expect the local DB
+                // to be current with TheSportsDB at the moment of add, not whatever the upstream
+                // cache happened to write last. Without forceRefresh, an add against a stale upstream
+                // cache plants stale events in the Sportarr DB and the very next click of the blue
+                // refresh button shows hundreds of "updated event" / "corrected episode number"
+                // entries — which surprises users who expect a fresh add to already be in sync.
+                // Background scheduled syncs (LeagueEventAutoSyncService) keep using the cheap
+                // cached path so the upstream API key budget isn't burned on routine work.
+                var syncResult = await syncService.SyncLeagueEventsAsync(leagueId, seasons: null, fullHistoricalSync: true, forceRefresh: true);
                 logger.LogInformation("[LEAGUES] Full historical sync completed for {Name}: {Message}",
                     leagueName, syncResult.Message);
             }
