@@ -1727,8 +1727,11 @@ app.MapPost("/api/leagues/{id:int}/refresh-events", async (
             seasons = request?.Seasons;
         }
 
-        // Always do full historical sync to pick up any newly added seasons from API
-        var result = await syncService.SyncLeagueEventsAsync(id, seasons, fullHistoricalSync: true);
+        // User-initiated refresh: ask sportarr-api to bypass its own cache via
+        // Cache-Control: no-cache so we get the latest schedule from TheSportsDB
+        // in this request. fullHistoricalSync stays true so newly added seasons
+        // upstream are picked up immediately.
+        var result = await syncService.SyncLeagueEventsAsync(id, seasons, fullHistoricalSync: true, forceRefresh: true);
 
         if (!result.Success)
         {

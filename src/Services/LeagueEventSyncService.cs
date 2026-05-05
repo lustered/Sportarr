@@ -36,8 +36,12 @@ public class LeagueEventSyncService
     /// <param name="seasons">Seasons to sync (e.g., ["2024", "2025"]). If null, uses smart defaults.</param>
     /// <param name="fullHistoricalSync">If true, syncs ALL historical seasons (for initial league add).
     /// If false (default), only syncs current/future seasons (for scheduled refreshes).</param>
+    /// <param name="forceRefresh">If true, the upstream Sportarr API calls send Cache-Control: no-cache so
+    /// sportarr.net bypasses its own cache and refetches from TheSportsDB synchronously. Use this for the
+    /// user-driven blue refresh button in the UI. Defaults to false so background syncs continue to use the
+    /// cheap stale-while-revalidate path that doesn't burden the upstream API key budget.</param>
     /// <returns>Result with counts of new, updated, and skipped events</returns>
-    public async Task<LeagueEventSyncResult> SyncLeagueEventsAsync(int leagueId, List<string>? seasons = null, bool fullHistoricalSync = false)
+    public async Task<LeagueEventSyncResult> SyncLeagueEventsAsync(int leagueId, List<string>? seasons = null, bool fullHistoricalSync = false, bool forceRefresh = false)
     {
         var result = new LeagueEventSyncResult { LeagueId = leagueId };
 
@@ -117,7 +121,7 @@ public class LeagueEventSyncService
             _logger.LogInformation("[League Event Sync] Fetching available seasons from Sportarr API for league: {LeagueName} (fullHistoricalSync: {FullSync})",
                 league.Name, fullHistoricalSync);
 
-            var availableSeasons = await _sportarrApiClient.GetAllSeasonsAsync(league.ExternalId);
+            var availableSeasons = await _sportarrApiClient.GetAllSeasonsAsync(league.ExternalId, forceRefresh);
 
             if (availableSeasons != null && availableSeasons.Any())
             {
@@ -180,7 +184,7 @@ public class LeagueEventSyncService
             _logger.LogInformation("[League Event Sync] Processing season {Current}/{Total}: {Season}",
                 seasonIndex, seasons.Count, season);
 
-            var events = await _sportarrApiClient.GetLeagueSeasonAsync(league.ExternalId, season);
+            var events = await _sportarrApiClient.GetLeagueSeasonAsync(league.ExternalId, season, forceRefresh);
 
             if (events == null)
             {

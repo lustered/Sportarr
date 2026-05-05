@@ -351,12 +351,20 @@ public class SportarrApiClient
     /// Get all available seasons for a league
     /// Returns list of seasons that actually exist in Sportarr API (no more guessing years!)
     /// </summary>
-    public async Task<List<Season>?> GetAllSeasonsAsync(string leagueId)
+    public async Task<List<Season>?> GetAllSeasonsAsync(string leagueId, bool forceRefresh = false)
     {
         try
         {
             var url = $"{_apiBaseUrl}/list/seasons/{Uri.EscapeDataString(leagueId)}";
-            using var response = await _httpClient.GetAsync(url);
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            if (forceRefresh)
+            {
+                // Tells sportarr.net to bypass its own cache and refetch from
+                // TheSportsDB on this request only. Used by the user-driven
+                // blue refresh button so a click guarantees fresh data.
+                request.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoCache = true };
+            }
+            using var response = await _httpClient.SendAsync(request);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
@@ -410,12 +418,20 @@ public class SportarrApiClient
     /// <summary>
     /// Get all events for a league season
     /// </summary>
-    public async Task<List<Event>?> GetLeagueSeasonAsync(string leagueId, string season)
+    public async Task<List<Event>?> GetLeagueSeasonAsync(string leagueId, string season, bool forceRefresh = false)
     {
         try
         {
             var url = $"{_apiBaseUrl}/schedule/league/{Uri.EscapeDataString(leagueId)}/{Uri.EscapeDataString(season)}";
-            using var response = await _httpClient.GetAsync(url);
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            if (forceRefresh)
+            {
+                // Tells sportarr.net to bypass its own cache and refetch from
+                // TheSportsDB on this request only. Used by the user-driven
+                // blue refresh button so a click guarantees fresh schedule data.
+                request.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoCache = true };
+            }
+            using var response = await _httpClient.SendAsync(request);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync();
