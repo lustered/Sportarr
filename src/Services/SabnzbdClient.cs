@@ -631,11 +631,27 @@ public class SabnzbdClient
                     // containing "aborted", which silently captured
                     // SAB's own "Aborted, cannot be completed" message
                     // (which means articles missing from the provider -
-                    // a real failure, no usable data on disk). Tighten
-                    // to phrases that unambiguously refer to a user
-                    // script.
+                    // a real failure, no usable data on disk).
+                    //
+                    // Two-layer defense:
+                    //   1. Match unambiguous user-script phrases.
+                    //   2. Storage path must be populated and NOT
+                    //      under /incomplete/. SAB writes the
+                    //      release path into historyItem.storage when
+                    //      unpacking succeeded; for real aborts it
+                    //      stays under incomplete/ or is empty. Even
+                    //      if a future SAB version uses a phrase that
+                    //      matches our script-failure list for a real
+                    //      abort, the storage gate blocks the
+                    //      misclassification.
+                    var hasUsableStorage =
+                        !string.IsNullOrEmpty(historyItem.storage) &&
+                        historyItem.storage.IndexOf("/incomplete/", StringComparison.OrdinalIgnoreCase) < 0 &&
+                        historyItem.storage.IndexOf("\\incomplete\\", StringComparison.OrdinalIgnoreCase) < 0;
+
                     var isPostProcessingScriptFailure =
                         !isRepairFailure && !isUnpackOrMoveFailure &&
+                        hasUsableStorage &&
                         (failMessage.Contains("post-processing script") ||
                          failMessage.Contains("post processing script") ||
                          failMessage.Contains("user script") ||
@@ -806,14 +822,38 @@ public class SabnzbdClient
             using var doc = JsonDocument.Parse(response);
             var root = doc.RootElement;
             if (!root.TryGetProperty("status", out var statusProp) || !statusProp.GetBoolean()) return false;
-            if (!root.TryGetProperty("nzo_ids", out var idsProp) || idsProp.ValueKind != JsonValueKind.Array) return false;
+
+            // SABnzbd's history-delete reliably returns status:true on
+            // success but the shape of nzo_ids varies by version: some
+            // versions return ["nzo_id"], some return [], and some
+            // omit the field entirely. Previously we required the id
+            // to appear in the array, which rejected legitimate
+            // single-id history-delete successes from any SAB build
+            // that omits/empties the array (warning fired after every
+            // import despite SAB having actually performed the
+            // delete). Treat status:true as authoritative success;
+            // when nzo_ids IS present we still verify the id appears
+            // in it so a delete that affected something else doesn't
+            // get counted.
+            if (!root.TryGetProperty("nzo_ids", out var idsProp) || idsProp.ValueKind != JsonValueKind.Array)
+                return true;
+
+            // Empty array on a status:true response means SAB accepted
+            // the request and either removed nothing or simply didn't
+            // echo the list. Trust status:true here too - the
+            // alternative is the spurious-warning regression noted
+            // above.
+            var any = false;
             foreach (var idElement in idsProp.EnumerateArray())
             {
+                any = true;
                 var s = idElement.GetString();
                 if (!string.IsNullOrEmpty(s) && string.Equals(s, nzoId, StringComparison.OrdinalIgnoreCase))
                     return true;
             }
-            return false;
+            // Array was non-empty but our id wasn't in it - the delete
+            // touched a different record. Treat as not-our-success.
+            return !any;
         }
         catch
         {
