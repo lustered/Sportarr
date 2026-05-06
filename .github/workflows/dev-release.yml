@@ -81,6 +81,19 @@ jobs:
           dotnet publish src/Sportarr.csproj -c Release -r osx-arm64 --self-contained true -p:PublishSingleFile=true -p:SkipFrontendBuild=true -p:Version=${{ steps.version.outputs.version }} -o publish/osx-arm64
           cd publish/osx-arm64 && tar -czvf ../../Sportarr-osx-arm64-${{ steps.version.outputs.version }}.tar.gz .
 
+      # GitHub caps a single release at 1000 assets. The dev "Development
+      # Build" release is auto-overwritten on every push, so over time we
+      # accumulate artifact uploads until softprops/action-gh-release fails
+      # with `file_count limited to 1000 assets per release`. Delete the
+      # release (keep the tag — softprops will reattach it) before each push
+      # so the asset count starts back at zero. continue-on-error so a
+      # first-time run with no existing release doesn't fail the workflow.
+      - name: Clear stale dev-release assets
+        run: gh release delete dev --yes --repo "${{ github.repository }}" || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
       - name: Update dev prerelease
         uses: softprops/action-gh-release@v2
         with:

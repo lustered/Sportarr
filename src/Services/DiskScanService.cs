@@ -129,16 +129,17 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
             }
         }
 
-        // Batch update missing events using ExecuteUpdateAsync (no tracking needed)
+        // Batch update missing events. Only flips HasFile=false; FilePath /
+        // FileSize / Quality stay so the next scan can re-verify when the
+        // path becomes reachable again (NAS reconnects, container remounts,
+        // restored backup gets root folder remapped, etc.). Wiping those
+        // fields on the first failure is what made restore reports look like
+        // "data was lost".
         if (missingEventIds.Count > 0)
         {
             await db.Events
                 .Where(e => missingEventIds.Contains(e.Id))
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(e => e.HasFile, false)
-                    .SetProperty(e => e.FilePath, (string?)null)
-                    .SetProperty(e => e.FileSize, (long?)null)
-                    .SetProperty(e => e.Quality, (string?)null),
+                .ExecuteUpdateAsync(s => s.SetProperty(e => e.HasFile, false),
                     cancellationToken);
         }
 
@@ -217,17 +218,16 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
                 .ExecuteUpdateAsync(s => s.SetProperty(ef => ef.LastVerified, now), cancellationToken);
         }
 
-        // Clean up stale EventFile records:
-        // 1. Remove records marked Exists=false (leftover from old upgrade logic that marked instead of removing)
-        // 2. Remove duplicate records for the same event (keep only the newest Exists=true record per event+part)
-        var staleRemoved = await db.EventFiles
-            .Where(ef => !ef.Exists)
-            .ExecuteDeleteAsync(cancellationToken);
-
-        if (staleRemoved > 0)
-        {
-            _logger.LogInformation("[Disk Scan] Cleaned up {Count} stale EventFile records (Exists=false)", staleRemoved);
-        }
+        // INTENTIONALLY do NOT delete EventFile rows where Exists=false.
+        // Doing so wipes user data whenever paths are temporarily unreachable —
+        // backup restored to a new server with different mounts, NAS briefly
+        // unmounted, container restart racing the network mount, root folder
+        // remap mid-edit, etc. Mark Exists=false on the row and leave it in
+        // place. The user can prune via the Files panel delete button when
+        // they're sure a file is permanently gone.
+        //
+        // Duplicate cleanup below is still safe because it only removes rows
+        // that have a newer existing duplicate for the same event+part.
 
         // Find events with duplicate Exists=true file records (same event, same part or both null)
         // Keep the newest record (highest Id) and remove the rest
@@ -326,16 +326,15 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
             }
         }
 
-        // Batch update events marked as missing
+        // Batch update events marked as missing. Only flips HasFile=false;
+        // FilePath / FileSize / Quality stay (see earlier comment in the
+        // direct-path-check branch above for the rationale — temporarily
+        // unreachable paths must not destroy user data).
         if (eventsToMarkMissing.Count > 0)
         {
             await db.Events
                 .Where(e => eventsToMarkMissing.Contains(e.Id))
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(e => e.HasFile, false)
-                    .SetProperty(e => e.FilePath, (string?)null)
-                    .SetProperty(e => e.FileSize, (long?)null)
-                    .SetProperty(e => e.Quality, (string?)null),
+                .ExecuteUpdateAsync(s => s.SetProperty(e => e.HasFile, false),
                     cancellationToken);
         }
 
