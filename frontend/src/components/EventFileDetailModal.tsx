@@ -636,17 +636,19 @@ export default function EventFileDetailModal({
         />
       )}
 
-      {/* Per-row metadata editor */}
+      {/* Per-row metadata editor.
+          key=editFile.id forces a fresh remount whenever the user clicks the
+          pencil on a different file, so the modal's internal state always
+          starts from that file's values rather than reusing the previous. */}
       {editFile && (
         <FileMetadataEditModal
+          key={`edit-${editFile.id}`}
           isOpen={!!editFile}
           onClose={() => setEditFile(null)}
           fileIds={[editFile.id]}
           initialValues={fileToEditorValues(editFile)}
           showPartFields={isFightingSport}
           onSaved={async (updated) => {
-            // Optimistically merge the new values into local state so the panel
-            // shows the change immediately, then refetch in the background.
             if (updated && updated[0]) {
               const u = updated[0];
               setLocalFiles((prev) => prev.map((f) => (f.id === u.id ? { ...f, ...u } : f)));
@@ -659,6 +661,7 @@ export default function EventFileDetailModal({
       {/* Bulk metadata editor (multi-select) */}
       {bulkEditOpen && selectedIds.size > 0 && (
         <FileMetadataEditModal
+          key={`bulk-${[...selectedIds].sort().join('-')}`}
           isOpen={bulkEditOpen}
           onClose={() => setBulkEditOpen(false)}
           fileIds={[...selectedIds]}

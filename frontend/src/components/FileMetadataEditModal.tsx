@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Dialog, Transition } from '@headlessui/react';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 import { toast } from 'sonner';
@@ -40,8 +40,18 @@ export default function FileMetadataEditModal({
   const [values, setValues] = useState<FileMetadataEditorValues>(initialValues);
   const [saving, setSaving] = useState(false);
 
+  // Re-seed local state ONLY when the modal transitions from closed to open.
+  // Watching `initialValues` here is a footgun: the parent recreates that
+  // object on every render, so any unrelated parent re-render (ReactQuery
+  // poll, sibling state change) would wipe the user's in-progress edits and
+  // make backspaces feel like they "undo themselves". Tracking the open
+  // transition with a ref makes the seeding deterministic.
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (isOpen) setValues(initialValues);
+    if (isOpen && !wasOpen.current) {
+      setValues(initialValues);
+    }
+    wasOpen.current = isOpen;
   }, [isOpen, initialValues]);
 
   const isBulk = fileIds.length > 1;

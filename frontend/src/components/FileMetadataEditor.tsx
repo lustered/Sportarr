@@ -3,17 +3,19 @@ import { XMarkIcon } from '@heroicons/react/24/outline';
 import apiClient from '../api/client';
 
 /**
- * Shared editor component for EventFile metadata. Used in four places with
+ * Shared editor component for EventFile metadata. Used in five places with
  * identical look and behavior:
- *   1. Post-import per-row pencil edit (Files panel)
- *   2. ManualImportModal pre-import editing
- *   3. LibraryImportPage pre-import editing
- *   4. ActivityPage PendingImport pre-import editing
+ *   1. Post-import per-row pencil edit (Files panel — per-event)
+ *   2. Post-import per-row pencil edit (Files panel — per-league)
+ *   3. ManualImportModal pre-import editing
+ *   4. LibraryImportPage pre-import editing
+ *   5. ActivityPage PendingImport pre-import editing (via ManualImportModal)
  *
- * "Controlled" component: parent owns the values via `value` and `onChange`.
- * The parent decides whether/when to PUT to the backend (post-import flow) or
- * pass values through to the import endpoint (pre-import flow). This is what
- * keeps the same component reusable across all four hosts.
+ * Controlled component: parent owns `value` and `onChange`. Native <select>
+ * elements match Sportarr's existing modal dropdown style (gray-800 with
+ * red/blue focus ring). Selects show all canonical options at once; values
+ * outside the canonical list are preserved by appending them as a one-off
+ * top option so the user's existing data is never lost or hidden.
  *
  * Field set mirrors Sonarr's bulk file editor (Quality, ReleaseGroup, Languages,
  * IndexerFlags, plus Sportarr's Codec/Source/PartName/PartNumber/OriginalTitle).
@@ -38,8 +40,6 @@ export interface FileMetadataEditorProps {
   hideFields?: Array<keyof FileMetadataEditorValues>;
   /** Disable all inputs (read-only mode). */
   disabled?: boolean;
-  /** Visual: compact two-column grid (default) vs vertical stack. */
-  compact?: boolean;
 }
 
 interface KnownLists {
@@ -54,6 +54,20 @@ interface KnownLists {
 let knownListsCache: KnownLists | null = null;
 let knownListsPromise: Promise<KnownLists> | null = null;
 
+const FALLBACK_LISTS: KnownLists = {
+  qualities: [
+    'Unknown', 'SDTV', 'DVD',
+    'WEBDL-480p', 'WEBRip-480p', 'Bluray-480p',
+    'HDTV-720p', 'WEBDL-720p', 'WEBRip-720p', 'Bluray-720p',
+    'HDTV-1080p', 'WEBDL-1080p', 'WEBRip-1080p', 'Bluray-1080p', 'Bluray-1080p Remux',
+    'HDTV-2160p', 'WEBDL-2160p', 'WEBRip-2160p', 'Bluray-2160p', 'Bluray-2160p Remux',
+    'Raw-HD',
+  ],
+  sources: ['WEBDL', 'WEBRip', 'BLURAY', 'HDTV', 'DVDRIP', 'RAWHD'],
+  codecs: ['x264', 'x265', 'AV1', 'VP9', 'XviD', 'MPEG2'],
+  indexerFlags: ['Freeleech', 'Halfleech', 'Internal', 'Scene', 'Nuked', 'DoubleUpload'],
+};
+
 async function fetchKnownLists(): Promise<KnownLists> {
   if (knownListsCache) return knownListsCache;
   if (knownListsPromise) return knownListsPromise;
@@ -64,23 +78,8 @@ async function fetchKnownLists(): Promise<KnownLists> {
       return res.data;
     })
     .catch(() => {
-      // Conservative fallback when the endpoint is unreachable; matches the
-      // server-side curated list so dropdowns aren't empty.
-      const fb: KnownLists = {
-        qualities: [
-          'Unknown', 'SDTV', 'DVD',
-          'WEBDL-480p', 'WEBRip-480p', 'Bluray-480p',
-          'HDTV-720p', 'WEBDL-720p', 'WEBRip-720p', 'Bluray-720p',
-          'HDTV-1080p', 'WEBDL-1080p', 'WEBRip-1080p', 'Bluray-1080p', 'Bluray-1080p Remux',
-          'HDTV-2160p', 'WEBDL-2160p', 'WEBRip-2160p', 'Bluray-2160p', 'Bluray-2160p Remux',
-          'Raw-HD',
-        ],
-        sources: ['WEBDL', 'WEBRip', 'BLURAY', 'HDTV', 'DVDRIP', 'RAWHD'],
-        codecs: ['x264', 'x265', 'AV1', 'VP9', 'XviD', 'MPEG2'],
-        indexerFlags: ['Freeleech', 'Halfleech', 'Internal', 'Scene', 'Nuked', 'DoubleUpload'],
-      };
-      knownListsCache = fb;
-      return fb;
+      knownListsCache = FALLBACK_LISTS;
+      return FALLBACK_LISTS;
     });
   return knownListsPromise;
 }
@@ -91,21 +90,31 @@ const COMMON_LANGUAGES = [
   'Dutch', 'Polish', 'Turkish', 'Swedish', 'Norwegian', 'Danish',
 ];
 
+// Sentinel used by the Quality/Source/Codec selects to switch into custom-text mode.
+const CUSTOM_OPTION = '__custom__';
+const NO_VALUE = '__none__';
+
 export default function FileMetadataEditor({
   value,
   onChange,
   hideFields = [],
   disabled = false,
-  compact = true,
 }: FileMetadataEditorProps) {
-  const [lists, setLists] = useState<KnownLists | null>(knownListsCache);
-  const [languageInput, setLanguageInput] = useState('');
+  const [lists, setLists] = useState<KnownLists | null>(knownListsCache ?? FALLBACK_LISTS);
+  const [languageToAdd, setLanguageToAdd] = useState('');
   const [flagsList, setFlagsList] = useState<string[]>(() =>
     splitFlags(value.indexerFlags));
 
+  // "Custom" mode for the closed-list selects. Once enabled, render a free-text
+  // input next to the select so the user can type a value the canonical list
+  // doesn't include without losing their place.
+  const [customQuality, setCustomQuality] = useState(false);
+  const [customSource, setCustomSource] = useState(false);
+  const [customCodec, setCustomCodec] = useState(false);
+
   useEffect(() => {
-    if (!lists) fetchKnownLists().then(setLists);
-  }, [lists]);
+    if (!knownListsCache) fetchKnownLists().then(setLists);
+  }, []);
 
   // Keep flagsList in sync if value.indexerFlags changes externally.
   useEffect(() => {
@@ -123,7 +132,7 @@ export default function FileMetadataEditor({
     const current = value.languages ?? [];
     if (current.some((l) => l.toLowerCase() === trimmed.toLowerCase())) return;
     update({ languages: [...current, trimmed] });
-    setLanguageInput('');
+    setLanguageToAdd('');
   };
 
   const removeLanguage = (lang: string) => {
@@ -138,46 +147,45 @@ export default function FileMetadataEditor({
     update({ indexerFlags: next.length ? next.join(', ') : '' });
   };
 
-  const containerClass = compact
-    ? 'grid grid-cols-1 md:grid-cols-2 gap-4'
-    : 'flex flex-col gap-4';
-
   return (
-    <div className={containerClass}>
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       {!hidden('quality') && (
-        <Field label="Quality">
-          <Combo
-            value={value.quality ?? ''}
-            options={lists?.qualities ?? []}
-            onChange={(v) => update({ quality: v })}
-            placeholder="Select or type a quality"
-            disabled={disabled}
-          />
-        </Field>
+        <SelectField
+          label="Quality"
+          value={value.quality}
+          options={lists?.qualities ?? FALLBACK_LISTS.qualities}
+          onChange={(v) => update({ quality: v })}
+          disabled={disabled}
+          customMode={customQuality}
+          onCustomToggle={setCustomQuality}
+          allowEmpty
+        />
       )}
 
       {!hidden('source') && (
-        <Field label="Source">
-          <Combo
-            value={value.source ?? ''}
-            options={lists?.sources ?? []}
-            onChange={(v) => update({ source: v })}
-            placeholder="WEBDL, BLURAY, HDTV…"
-            disabled={disabled}
-          />
-        </Field>
+        <SelectField
+          label="Source"
+          value={value.source}
+          options={lists?.sources ?? FALLBACK_LISTS.sources}
+          onChange={(v) => update({ source: v })}
+          disabled={disabled}
+          customMode={customSource}
+          onCustomToggle={setCustomSource}
+          allowEmpty
+        />
       )}
 
       {!hidden('codec') && (
-        <Field label="Video Codec">
-          <Combo
-            value={value.codec ?? ''}
-            options={lists?.codecs ?? []}
-            onChange={(v) => update({ codec: v })}
-            placeholder="x264, x265, AV1…"
-            disabled={disabled}
-          />
-        </Field>
+        <SelectField
+          label="Video Codec"
+          value={value.codec}
+          options={lists?.codecs ?? FALLBACK_LISTS.codecs}
+          onChange={(v) => update({ codec: v })}
+          disabled={disabled}
+          customMode={customCodec}
+          onCustomToggle={setCustomCodec}
+          allowEmpty
+        />
       )}
 
       {!hidden('releaseGroup') && (
@@ -209,11 +217,11 @@ export default function FileMetadataEditor({
       {!hidden('languages') && (
         <Field label="Languages" full>
           <div className="flex flex-col gap-2">
-            <div className="flex flex-wrap gap-2 min-h-[2rem]">
+            <div className="flex flex-wrap gap-2 min-h-[1.75rem]">
               {(value.languages ?? []).map((l) => (
                 <span
                   key={l}
-                  className="inline-flex items-center gap-1 rounded bg-emerald-900/40 text-emerald-200 text-xs px-2 py-1"
+                  className="inline-flex items-center gap-1 rounded bg-emerald-900/40 text-emerald-200 text-xs px-2 py-1 border border-emerald-700/40"
                 >
                   {l}
                   {!disabled && (
@@ -234,29 +242,44 @@ export default function FileMetadataEditor({
             </div>
             {!disabled && (
               <div className="flex gap-2">
+                <select
+                  className={inputClass(disabled) + ' flex-1'}
+                  value={languageToAdd}
+                  onChange={(e) => {
+                    if (e.target.value === '') {
+                      setLanguageToAdd('');
+                    } else if (e.target.value === CUSTOM_OPTION) {
+                      setLanguageToAdd('');
+                    } else {
+                      addLanguage(e.target.value);
+                    }
+                  }}
+                >
+                  <option value="">Add a language…</option>
+                  {COMMON_LANGUAGES.filter(
+                    (l) => !(value.languages ?? []).some((existing) => existing.toLowerCase() === l.toLowerCase()),
+                  ).map((l) => (
+                    <option key={l} value={l}>{l}</option>
+                  ))}
+                </select>
                 <input
                   type="text"
-                  list="fme-language-options"
                   className={inputClass(disabled) + ' flex-1'}
-                  value={languageInput}
-                  placeholder="Add language and press Enter"
-                  onChange={(e) => setLanguageInput(e.target.value)}
+                  value={languageToAdd}
+                  placeholder="…or type a custom one"
+                  onChange={(e) => setLanguageToAdd(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
-                      addLanguage(languageInput);
+                      addLanguage(languageToAdd);
                     }
                   }}
                 />
-                <datalist id="fme-language-options">
-                  {COMMON_LANGUAGES.map((l) => (
-                    <option key={l} value={l} />
-                  ))}
-                </datalist>
                 <button
                   type="button"
-                  onClick={() => addLanguage(languageInput)}
-                  className="px-3 py-1 rounded bg-blue-700 hover:bg-blue-600 text-white text-sm"
+                  onClick={() => addLanguage(languageToAdd)}
+                  disabled={!languageToAdd.trim()}
+                  className="px-4 py-2 rounded-lg bg-blue-700 hover:bg-blue-600 text-white text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Add
                 </button>
@@ -269,7 +292,7 @@ export default function FileMetadataEditor({
       {!hidden('indexerFlags') && (
         <Field label="Indexer Flags" full>
           <div className="flex flex-wrap gap-2">
-            {(lists?.indexerFlags ?? []).map((flag) => {
+            {(lists?.indexerFlags ?? FALLBACK_LISTS.indexerFlags).map((flag) => {
               const active = flagsList.includes(flag);
               return (
                 <button
@@ -278,10 +301,10 @@ export default function FileMetadataEditor({
                   disabled={disabled}
                   onClick={() => toggleFlag(flag)}
                   className={
-                    'px-2.5 py-1 rounded text-xs border transition ' +
+                    'px-3 py-1.5 rounded-lg text-xs border transition-colors ' +
                     (active
                       ? 'bg-blue-700 border-blue-500 text-white'
-                      : 'bg-gray-800 border-gray-700 text-gray-300 hover:bg-gray-700') +
+                      : 'bg-gray-800 border-gray-600 text-gray-300 hover:bg-gray-700 hover:border-gray-500') +
                     (disabled ? ' opacity-50 cursor-not-allowed' : '')
                   }
                 >
@@ -338,7 +361,7 @@ function Field({
 }) {
   return (
     <div className={full ? 'md:col-span-2' : ''}>
-      <label className="block text-xs uppercase tracking-wide text-gray-400 mb-1">
+      <label className="block text-xs uppercase tracking-wide text-gray-400 mb-1.5 font-medium">
         {label}
       </label>
       {children}
@@ -348,45 +371,94 @@ function Field({
 
 function inputClass(disabled: boolean) {
   return (
-    'w-full rounded bg-gray-900 border border-gray-700 text-gray-100 px-3 py-1.5 text-sm ' +
-    'focus:outline-none focus:border-blue-500 ' +
+    'w-full rounded-lg bg-gray-800 border border-gray-600 text-white px-4 py-2 text-sm ' +
+    'focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 ' +
+    'placeholder-gray-500 ' +
     (disabled ? 'opacity-60 cursor-not-allowed' : '')
   );
 }
 
-function Combo({
+/**
+ * Closed-list select with a "Custom…" escape hatch. Native `<select>` matches
+ * the rest of the app's dropdowns; clicking shows every option in one go,
+ * not just substring matches. When the bound value isn't one of the canonical
+ * options it gets added as a sentinel top option so the user's existing
+ * data is preserved and visible.
+ */
+function SelectField({
+  label,
   value,
   options,
   onChange,
-  placeholder,
   disabled,
+  customMode,
+  onCustomToggle,
+  allowEmpty,
 }: {
-  value: string;
+  label: string;
+  value: string | undefined;
   options: string[];
-  onChange: (v: string) => void;
-  placeholder: string;
+  onChange: (v: string | undefined) => void;
   disabled: boolean;
+  customMode: boolean;
+  onCustomToggle: (b: boolean) => void;
+  allowEmpty?: boolean;
 }) {
-  // Native datalist gives us autocomplete + free-text in a tiny package; works
-  // across all browsers, no popper / dropdown library needed.
-  const id = `combo-${placeholder.replace(/\s+/g, '-')}`;
+  // Show the existing value as a select option even if it's not in the canonical
+  // list. Avoids hiding "TS", "Unknown", or odd legacy strings.
+  const valueIsCanonical = value != null && options.some((o) => o.toLowerCase() === value.toLowerCase());
+  const showInline = customMode || (value != null && !valueIsCanonical && !options.includes(value));
+
   return (
-    <>
-      <input
-        type="text"
-        list={id}
-        className={inputClass(disabled)}
-        value={value}
-        placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={disabled}
-      />
-      <datalist id={id}>
-        {options.map((o) => (
-          <option key={o} value={o} />
-        ))}
-      </datalist>
-    </>
+    <Field label={label}>
+      <div className="flex gap-2">
+        {showInline ? (
+          <>
+            <input
+              type="text"
+              className={inputClass(disabled)}
+              value={value ?? ''}
+              onChange={(e) => onChange(e.target.value || undefined)}
+              placeholder={`Custom ${label.toLowerCase()}`}
+              disabled={disabled}
+              autoFocus={customMode}
+            />
+            <button
+              type="button"
+              onClick={() => onCustomToggle(false)}
+              disabled={disabled}
+              className="px-3 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-white text-xs whitespace-nowrap"
+              title="Switch back to dropdown"
+            >
+              List…
+            </button>
+          </>
+        ) : (
+          <select
+            className={inputClass(disabled)}
+            value={value ?? (allowEmpty ? NO_VALUE : '')}
+            onChange={(e) => {
+              if (e.target.value === CUSTOM_OPTION) {
+                onCustomToggle(true);
+                return;
+              }
+              if (e.target.value === NO_VALUE) {
+                onChange(undefined);
+                return;
+              }
+              onChange(e.target.value);
+            }}
+            disabled={disabled}
+          >
+            {allowEmpty && <option value={NO_VALUE}>— not set —</option>}
+            {options.map((o) => (
+              <option key={o} value={o}>{o}</option>
+            ))}
+            <option value={CUSTOM_OPTION}>Custom…</option>
+          </select>
+        )}
+      </div>
+    </Field>
   );
 }
 
