@@ -568,8 +568,20 @@ public class RssSyncService : BackgroundService
         if (existingFile != null)
         {
             // Recalculate quality scores from quality strings (don't trust stored values from old inverted scoring)
-            var existingTotalScore = ReleaseEvaluator.CalculateQualityScoreFromName(existingFile.Quality) + existingFile.CustomFormatScore;
+            var existingQualityScoreOnly = ReleaseEvaluator.CalculateQualityScoreFromName(existingFile.Quality);
+            var existingTotalScore = existingQualityScoreOnly + existingFile.CustomFormatScore;
             var newTotalScore = ReleaseEvaluator.CalculateQualityScoreFromName(release.Quality) + release.CustomFormatScore;
+
+            // REFUSE-UNKNOWN-UPGRADE GATE: Library imports whose filenames lacked a quality
+            // keyword get persisted with Quality="Unknown" (or null/empty), which scores 0.
+            // Every RSS-discovered release then looks like an upgrade and the event gets
+            // re-downloaded, defeating the user's import. Refuse to auto-upgrade when we
+            // can't classify the existing file. The frontend manual-search flow goes through
+            // AutomaticSearchService directly with isManualSearch=true and bypasses this path.
+            if (existingQualityScoreOnly == 0)
+            {
+                return (false, $"Existing file quality is unrecognized ('{existingFile.Quality ?? "null"}'), refusing auto re-download", releasePart);
+            }
 
             if (newTotalScore <= existingTotalScore)
             {

@@ -799,6 +799,24 @@ public class AutomaticSearchService : IAutomaticSearchService
                         _logger.LogInformation("[Automatic Search] Event already has file: {Quality} (Part: {Part})",
                             relevantFile.Quality, relevantFile.PartName ?? "Full Event");
                     }
+                    else if (!string.IsNullOrEmpty(evt.FilePath))
+                    {
+                        // Legacy import: Event has a direct FilePath/Quality but no EventFile row
+                        // (older Sportarr versions only set Event-level fields). Synthesize a
+                        // stand-in so the upgrade gate below still fires instead of silently
+                        // re-downloading the file.
+                        relevantFile = new EventFile
+                        {
+                            EventId = eventId,
+                            FilePath = evt.FilePath,
+                            Quality = evt.Quality,
+                            Size = evt.FileSize ?? 0,
+                            Exists = true,
+                            CustomFormatScore = 0
+                        };
+                        _logger.LogInformation("[Automatic Search] Event has direct file path with no EventFile row, using event-level quality for upgrade check: {Quality}",
+                            evt.Quality ?? "null");
+                    }
                 }
 
                 // Perform upgrade eligibility check if we have a relevant existing file.
@@ -830,6 +848,20 @@ public class AutomaticSearchService : IAutomaticSearchService
                     _logger.LogInformation("[Automatic Search] Upgrade check - Existing: Quality={ExistingQuality} (score={ExistingQScore}), Format={ExistingFScore} | New: Quality={NewQuality} (score={NewQScore}), Format={NewFScore}",
                         relevantFile.Quality, existingQualityScore, existingFormatScore,
                         bestRelease.Quality, newReleaseQualityScore, newReleaseFormatScore);
+
+                    // REFUSE-UNKNOWN-UPGRADE GATE: Library imports whose filenames lacked a quality keyword
+                    // get persisted with Quality="Unknown" (or null/empty), which scores 0. Every indexer
+                    // result then looks like an upgrade and the event gets re-downloaded, defeating the
+                    // user's import. Refuse to auto-upgrade when we can't classify the existing file.
+                    // Manual searches bypass this so users can still force an upgrade explicitly.
+                    if (!isManualSearch && existingQualityScore == 0)
+                    {
+                        result.Success = false;
+                        result.Message = $"Existing file quality is unrecognized ('{relevantFile.Quality ?? "null"}'). Refusing automatic re-download to avoid duplicating an imported library file. Trigger a manual search to override.";
+                        _logger.LogInformation("[Automatic Search] Skipping {Title} - existing file quality unparseable ('{Quality}'); manual search required to upgrade",
+                            evt.Title, relevantFile.Quality ?? "null");
+                        return result;
+                    }
 
                     // CHECK 2: CutoffQuality
                     // If existing file quality meets or exceeds cutoff, don't upgrade based on quality alone
