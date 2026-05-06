@@ -1218,6 +1218,14 @@ namespace Sportarr.Api.Migrations
                         .HasMaxLength(1000)
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("IndexerFlags")
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("Languages")
+                        .IsRequired()
+                        .HasColumnType("TEXT");
+
                     b.Property<DateTime?>("LastVerified")
                         .HasColumnType("TEXT");
 
@@ -1237,6 +1245,9 @@ namespace Sportarr.Api.Migrations
 
                     b.Property<int>("QualityScore")
                         .HasColumnType("INTEGER");
+
+                    b.Property<string>("ReleaseGroup")
+                        .HasColumnType("TEXT");
 
                     b.Property<long>("Size")
                         .HasColumnType("INTEGER");

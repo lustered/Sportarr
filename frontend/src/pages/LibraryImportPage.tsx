@@ -17,6 +17,9 @@ import FileDetailsModal from '../components/FileDetailsModal';
 import PageHeader from '../components/PageHeader';
 import PageShell from '../components/PageShell';
 import { apiGet, apiPost } from '../utils/api';
+import FileMetadataEditor, { type FileMetadataEditorValues } from '../components/FileMetadataEditor';
+import { Dialog, Transition } from '@headlessui/react';
+import { Fragment } from 'react';
 
 interface ImportableFile {
   filePath: string;
@@ -59,6 +62,22 @@ interface FileImportRequest {
   partNumber?: number;
   leagueId?: number;
   season?: string;
+  // Pre-import metadata overrides — sent through to LibraryImportService and
+  // applied to the new EventFile after creation. Mirrors the post-import
+  // editor's field set so users can correct parser mistakes BEFORE the file
+  // is committed to the library.
+  source?: string;
+  codec?: string;
+  releaseGroup?: string;
+  originalTitle?: string;
+  languages?: string[];
+  indexerFlags?: string;
+}
+
+function nonEmpty(s: string | undefined): string | undefined {
+  if (s === undefined || s === null) return undefined;
+  const t = s.trim();
+  return t.length === 0 ? undefined : t;
 }
 
 interface FileMapping {
@@ -121,6 +140,12 @@ const LibraryImportPage: React.FC = () => {
   // Selection state
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [fileEventMappings, setFileEventMappings] = useState<Map<string, FileMapping>>(new Map());
+  // Per-file metadata overrides keyed by filePath. Pre-filled from parser
+  // values on first edit, sent through to /api/library/import alongside
+  // the FileImportRequest. Optional — files without an entry use parser defaults.
+  const [fileMetadataOverrides, setFileMetadataOverrides] =
+    useState<Map<string, FileMetadataEditorValues>>(new Map());
+  const [editorOpenForFile, setEditorOpenForFile] = useState<string | null>(null);
 
   // Import state
   const [importing, setImporting] = useState(false);
@@ -301,6 +326,23 @@ const LibraryImportPage: React.FC = () => {
           throw new Error(`File not found: ${filePath}`);
         }
 
+        // Pull per-file metadata overrides (Codec / Source / ReleaseGroup /
+        // OriginalTitle / Languages / IndexerFlags) and quality if the user
+        // touched the metadata editor row. Quality from the editor wins over
+        // the parser-derived file.quality below.
+        const overrides = fileMetadataOverrides.get(filePath);
+        const overridePart: Partial<FileImportRequest> = overrides ? {
+          quality: nonEmpty(overrides.quality),
+          source: nonEmpty(overrides.source),
+          codec: nonEmpty(overrides.codec),
+          releaseGroup: nonEmpty(overrides.releaseGroup),
+          originalTitle: nonEmpty(overrides.originalTitle),
+          languages: overrides.languages && overrides.languages.length > 0 ? overrides.languages : undefined,
+          indexerFlags: nonEmpty(overrides.indexerFlags),
+          partName: overrides.partName ?? undefined,
+          partNumber: typeof overrides.partNumber === 'number' ? overrides.partNumber : undefined,
+        } : {};
+
         const manualMapping = fileEventMappings.get(filePath);
         if (manualMapping) {
           return {
@@ -308,10 +350,11 @@ const LibraryImportPage: React.FC = () => {
             eventId: manualMapping.eventId,
             createNew: manualMapping.createNew ?? false,
             eventTitle: manualMapping.eventTitle,
-            partName: manualMapping.partName,
-            partNumber: manualMapping.partNumber,
+            partName: overridePart.partName ?? manualMapping.partName,
+            partNumber: overridePart.partNumber ?? manualMapping.partNumber,
             leagueId: manualMapping.leagueId,
-            season: manualMapping.season
+            season: manualMapping.season,
+            ...overridePart
           };
         }
 
@@ -320,7 +363,8 @@ const LibraryImportPage: React.FC = () => {
           return {
             filePath: file.filePath,
             eventId: file.matchedEventId || file.existingEventId,
-            createNew: false
+            createNew: false,
+            ...overridePart
           };
         }
 
@@ -330,7 +374,8 @@ const LibraryImportPage: React.FC = () => {
           eventTitle: file.parsedTitle,
           organization: file.parsedOrganization,
           eventDate: file.parsedDate,
-          quality: file.quality
+          quality: overridePart.quality ?? file.quality,
+          ...overridePart
         };
       });
 
@@ -610,6 +655,19 @@ const LibraryImportPage: React.FC = () => {
                           </div>
                           {!mapping && getConfidenceBadge(file.matchConfidence)}
                           <button
+                            onClick={() => setEditorOpenForFile(file.filePath)}
+                            className={
+                              'px-3 py-1 text-white text-sm rounded transition-colors flex items-center gap-1 ' +
+                              (fileMetadataOverrides.has(file.filePath)
+                                ? 'bg-emerald-700 hover:bg-emerald-600'
+                                : 'bg-gray-700 hover:bg-gray-600')
+                            }
+                            title="Edit file metadata before import (Quality, Source, Codec, Languages…)"
+                          >
+                            <PencilSquareIcon className="w-4 h-4" />
+                            Metadata
+                          </button>
+                          <button
                             onClick={() => openFileDetailsModal(file)}
                             className="px-3 py-1 bg-gray-600 hover:bg-gray-500 text-white text-sm rounded transition-colors flex items-center gap-1"
                             title="Edit match details"
@@ -671,6 +729,19 @@ const LibraryImportPage: React.FC = () => {
                             </p>
                           </div>
                           <button
+                            onClick={() => setEditorOpenForFile(file.filePath)}
+                            className={
+                              'px-3 py-1 text-white text-sm rounded transition-colors flex items-center gap-1 ' +
+                              (fileMetadataOverrides.has(file.filePath)
+                                ? 'bg-emerald-700 hover:bg-emerald-600'
+                                : 'bg-gray-700 hover:bg-gray-600')
+                            }
+                            title="Edit file metadata before import"
+                          >
+                            <PencilSquareIcon className="w-4 h-4" />
+                            Metadata
+                          </button>
+                          <button
                             onClick={() => openFileDetailsModal(file)}
                             className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded transition-colors flex items-center gap-1"
                           >
@@ -730,6 +801,19 @@ const LibraryImportPage: React.FC = () => {
                               <span className="text-gray-500 ml-2">({file.fileSizeFormatted})</span>
                             </p>
                           </div>
+                          <button
+                            onClick={() => setEditorOpenForFile(file.filePath)}
+                            className={
+                              'px-3 py-1 text-white text-sm rounded transition-colors flex items-center gap-1 ' +
+                              (fileMetadataOverrides.has(file.filePath)
+                                ? 'bg-emerald-700 hover:bg-emerald-600'
+                                : 'bg-gray-700 hover:bg-gray-600')
+                            }
+                            title="Edit file metadata before re-import"
+                          >
+                            <PencilSquareIcon className="w-4 h-4" />
+                            Metadata
+                          </button>
                           <button
                             onClick={() => openFileDetailsModal(file)}
                             className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded transition-colors flex items-center gap-1"
@@ -958,6 +1042,96 @@ const LibraryImportPage: React.FC = () => {
         parsedDate={activeFile?.parsedDate}
         currentMapping={activeFile ? fileEventMappings.get(activeFile.filePath) : undefined}
       />
+
+      {/* Pre-import Metadata Editor */}
+      <Transition appear show={editorOpenForFile !== null} as={Fragment}>
+        <Dialog as="div" className="relative z-50" onClose={() => setEditorOpenForFile(null)}>
+          <Transition.Child
+            as={Fragment}
+            enter="ease-out duration-200" enterFrom="opacity-0" enterTo="opacity-100"
+            leave="ease-in duration-150" leaveFrom="opacity-100" leaveTo="opacity-0"
+          >
+            <div className="fixed inset-0 bg-black/70" />
+          </Transition.Child>
+          <div className="fixed inset-0 overflow-y-auto">
+            <div className="flex min-h-full items-center justify-center p-4">
+              <Transition.Child
+                as={Fragment}
+                enter="ease-out duration-200" enterFrom="opacity-0 scale-95" enterTo="opacity-100 scale-100"
+                leave="ease-in duration-150" leaveFrom="opacity-100 scale-100" leaveTo="opacity-0 scale-95"
+              >
+                <Dialog.Panel className="w-full max-w-2xl rounded-lg bg-gray-900 border border-gray-700 shadow-2xl">
+                  <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700">
+                    <Dialog.Title className="text-lg font-semibold text-white">
+                      Edit File Metadata
+                    </Dialog.Title>
+                    <button onClick={() => setEditorOpenForFile(null)} className="text-gray-400 hover:text-white">
+                      ✕
+                    </button>
+                  </div>
+                  <div className="px-5 py-5">
+                    {editorOpenForFile && (() => {
+                      const file = scanResult && [
+                        ...scanResult.matchedFiles,
+                        ...scanResult.unmatchedFiles,
+                        ...scanResult.alreadyInLibrary,
+                      ].find((f) => f.filePath === editorOpenForFile);
+                      const initial: FileMetadataEditorValues = fileMetadataOverrides.get(editorOpenForFile) ?? {
+                        quality: file?.quality,
+                        languages: [],
+                      };
+                      return (
+                        <>
+                          <p className="text-sm text-gray-400 mb-3 truncate">
+                            {file?.fileName || editorOpenForFile}
+                          </p>
+                          <FileMetadataEditor
+                            value={initial}
+                            onChange={(next) => {
+                              setFileMetadataOverrides((prev) => {
+                                const m = new Map(prev);
+                                m.set(editorOpenForFile, next);
+                                return m;
+                              });
+                            }}
+                          />
+                          <p className="mt-3 text-xs text-gray-500">
+                            Empty fields here keep the parser's value. Anything you fill in will be applied
+                            to the file after it imports.
+                          </p>
+                        </>
+                      );
+                    })()}
+                  </div>
+                  <div className="flex items-center justify-between gap-2 px-5 py-3 bg-gray-800/40 border-t border-gray-700 rounded-b-lg">
+                    <button
+                      onClick={() => {
+                        if (editorOpenForFile) {
+                          setFileMetadataOverrides((prev) => {
+                            const m = new Map(prev);
+                            m.delete(editorOpenForFile);
+                            return m;
+                          });
+                        }
+                        setEditorOpenForFile(null);
+                      }}
+                      className="px-3 py-1.5 rounded text-sm text-amber-300 hover:bg-amber-900/20"
+                    >
+                      Clear overrides
+                    </button>
+                    <button
+                      onClick={() => setEditorOpenForFile(null)}
+                      className="px-4 py-1.5 rounded text-sm bg-blue-700 hover:bg-blue-600 text-white"
+                    >
+                      Done
+                    </button>
+                  </div>
+                </Dialog.Panel>
+              </Transition.Child>
+            </div>
+          </div>
+        </Dialog>
+      </Transition>
     </PageShell>
   );
 };

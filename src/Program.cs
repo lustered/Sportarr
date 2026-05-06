@@ -655,6 +655,7 @@ app.MapTaskEndpoints();
 
 // Sportarr native API ----------------------------------------------------
 app.MapEventEndpoints();
+app.MapEventFileEditorEndpoints();
 app.MapTagAndQualityProfileEndpoints();
 app.MapCustomFormatEndpoints();
 app.MapTrashGuidesEndpoints();

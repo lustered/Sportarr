@@ -1162,6 +1162,43 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify EventFiles.ReleaseGroup column: {ex.Message}");
         }
 
+        // Ensure Languages column exists in EventFiles table (audio/subtitle languages, JSON list).
+        // Defaults to "[]" so existing rows materialize as empty lists.
+        try
+        {
+            var checkLangColumnSql = "SELECT COUNT(*) FROM pragma_table_info('EventFiles') WHERE name='Languages'";
+            var langColumnExists = db.Database.SqlQueryRaw<int>(checkLangColumnSql).AsEnumerable().FirstOrDefault();
+
+            if (langColumnExists == 0)
+            {
+                Console.WriteLine("[Sportarr] EventFiles.Languages column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE EventFiles ADD COLUMN Languages TEXT NOT NULL DEFAULT '[]'");
+                Console.WriteLine("[Sportarr] EventFiles.Languages column added successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not verify EventFiles.Languages column: {ex.Message}");
+        }
+
+        // Ensure IndexerFlags column exists in EventFiles table (Freeleech/Internal/Scene/Nuked tokens).
+        try
+        {
+            var checkIfColumnSql = "SELECT COUNT(*) FROM pragma_table_info('EventFiles') WHERE name='IndexerFlags'";
+            var ifColumnExists = db.Database.SqlQueryRaw<int>(checkIfColumnSql).AsEnumerable().FirstOrDefault();
+
+            if (ifColumnExists == 0)
+            {
+                Console.WriteLine("[Sportarr] EventFiles.IndexerFlags column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE EventFiles ADD COLUMN IndexerFlags TEXT");
+                Console.WriteLine("[Sportarr] EventFiles.IndexerFlags column added successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not verify EventFiles.IndexerFlags column: {ex.Message}");
+        }
+
         // Ensure DownloadId column exists in GrabHistory table (for external download detection)
         try
         {

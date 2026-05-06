@@ -702,7 +702,7 @@ public class PackImportService
     {
         var fileInfo = new FileInfo(sourceFile);
         var fileName = Path.GetFileName(sourceFile);
-        var parsed = _parser.Parse(fileName);
+        var parsed = await _parser.ParseWithInspectionAsync(fileName, sourceFile);
 
         _logger.LogInformation("[Pack Import] Importing file: {FileName} -> {Event}", fileName, eventInfo.Title);
         _logger.LogDebug("[Pack Import] Parsed from file: Quality={Quality}, Codec={Codec}, Source={Source}, ReleaseGroup={Group}",

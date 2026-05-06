@@ -88,7 +88,10 @@ public class LibraryImportService
 
                     // Try sports-specific parser first for better accuracy
                     var sportsResult = _sportsParser.Parse(filename);
-                    var parsedInfo = _fileParser.Parse(filename);
+                    // ParseWithInspectionAsync runs ffprobe when the filename alone doesn't
+                    // give us a Resolution+Source pair. Costs ~50-200ms per uninformative
+                    // file but produces accurate Quality on first scan.
+                    var parsedInfo = await _fileParser.ParseWithInspectionAsync(filename, filePath);
 
                     // Use sports parser if it has high confidence
                     var eventTitle = sportsResult.Confidence >= 60 && !string.IsNullOrEmpty(sportsResult.EventTitle)
@@ -265,7 +268,12 @@ public class LibraryImportService
                 var sourceFileInfo = new FileInfo(request.FilePath);
                 // Capture file size BEFORE moving - after move, source file won't exist
                 var sourceFileSize = sourceFileInfo.Length;
-                var parsedInfo = _fileParser.Parse(Path.GetFileNameWithoutExtension(request.FilePath));
+                // ParseWithInspectionAsync runs ffprobe when the filename alone doesn't
+                // yield a usable Resolution+Source pair. This is what saves library imports
+                // of files like "match.mkv" from ending up with Quality=Unknown.
+                var parsedInfo = await _fileParser.ParseWithInspectionAsync(
+                    Path.GetFileNameWithoutExtension(request.FilePath),
+                    request.FilePath);
 
                 // Parse import mode from request: "move" or "copy"
                 // Default behavior based on CopyFiles setting:
@@ -357,16 +365,22 @@ public class LibraryImportService
                         }
                         else
                         {
-                            // Create new EventFile record
+                            // Create new EventFile record. User-supplied overrides
+                            // (from the FileMetadataEditor) take precedence over the
+                            // parser's guesses for Codec / Source / ReleaseGroup /
+                            // OriginalTitle / Languages / IndexerFlags.
                             var eventFile = new EventFile
                             {
                                 EventId = existingEvent.Id,
                                 FilePath = destinationPath,
                                 Size = sourceFileSize,
                                 Quality = request.Quality ?? _fileParser.BuildQualityString(parsedInfo),
-                                Codec = parsedInfo.VideoCodec,
-                                Source = parsedInfo.Source,
-                                ReleaseGroup = parsedInfo.ReleaseGroup,
+                                Codec = request.Codec ?? parsedInfo.VideoCodec,
+                                Source = request.Source ?? parsedInfo.Source,
+                                ReleaseGroup = request.ReleaseGroup ?? parsedInfo.ReleaseGroup,
+                                OriginalTitle = request.OriginalTitle,
+                                Languages = request.Languages ?? new List<string>(),
+                                IndexerFlags = request.IndexerFlags,
                                 PartName = partName,
                                 PartNumber = partNumber,
                                 Added = DateTime.UtcNow,
@@ -460,16 +474,20 @@ public class LibraryImportService
                     newEvent.FilePath = destinationPath;
                     newEvent.HasFile = true;
 
-                    // Create EventFile record (part info already determined above)
+                    // Create EventFile record (part info already determined above).
+                    // User-supplied overrides take precedence over parser values.
                     var eventFile = new EventFile
                     {
                         EventId = newEvent.Id,
                         FilePath = destinationPath,
                         Size = sourceFileSize,
                         Quality = request.Quality ?? _fileParser.BuildQualityString(parsedInfo),
-                        Codec = parsedInfo.VideoCodec,
-                        Source = parsedInfo.Source,
-                        ReleaseGroup = parsedInfo.ReleaseGroup,
+                        Codec = request.Codec ?? parsedInfo.VideoCodec,
+                        Source = request.Source ?? parsedInfo.Source,
+                        ReleaseGroup = request.ReleaseGroup ?? parsedInfo.ReleaseGroup,
+                        OriginalTitle = request.OriginalTitle,
+                        Languages = request.Languages ?? new List<string>(),
+                        IndexerFlags = request.IndexerFlags,
                         PartName = partName,
                         PartNumber = partNumber,
                         Added = DateTime.UtcNow,
@@ -1569,6 +1587,19 @@ public class FileImportRequest
     /// - "copy": Copies files or creates hardlinks based on settings
     /// </summary>
     public string? ImportMode { get; set; }
+
+    /// <summary>
+    /// Optional pre-import metadata overrides supplied by the user via the
+    /// FileMetadataEditor. Applied to the new EventFile after creation so
+    /// user-corrected values stick instead of getting overwritten by the
+    /// parser. Mirrors the EventFileEditRequest shape one-to-one.
+    /// </summary>
+    public string? Source { get; set; }
+    public string? Codec { get; set; }
+    public string? ReleaseGroup { get; set; }
+    public string? OriginalTitle { get; set; }
+    public List<string>? Languages { get; set; }
+    public string? IndexerFlags { get; set; }
 }
 
 /// <summary>

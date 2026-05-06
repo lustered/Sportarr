@@ -375,6 +375,19 @@ public class EventFile
     /// Used for file renaming with {Release Group} token
     /// </summary>
     public string? ReleaseGroup { get; set; }
+
+    /// <summary>
+    /// Audio/subtitle languages present in the file (e.g., ["English", "Spanish"]).
+    /// Stored as a JSON array. User-editable via the file metadata editor.
+    /// </summary>
+    public List<string> Languages { get; set; } = new();
+
+    /// <summary>
+    /// Indexer-side flags from the original release (e.g., "Freeleech", "Internal", "Scene", "Nuked").
+    /// Stored as a comma-separated token list. Sourced from the indexer at grab time
+    /// where available, user-editable via the file metadata editor afterward.
+    /// </summary>
+    public string? IndexerFlags { get; set; }
 }
 
 /// <summary>
@@ -566,6 +579,7 @@ public class EventResponse
 public class EventFileResponse
 {
     public int Id { get; set; }
+    public int EventId { get; set; }
     public string FilePath { get; set; } = string.Empty;
     public long Size { get; set; }
     public string? Quality { get; set; }
@@ -574,9 +588,13 @@ public class EventFileResponse
     public string? Codec { get; set; }
     public string? Source { get; set; }
     public string? ReleaseGroup { get; set; }
+    public string? OriginalTitle { get; set; }
+    public List<string> Languages { get; set; } = new();
+    public string? IndexerFlags { get; set; }
     public string? PartName { get; set; }
     public int? PartNumber { get; set; }
     public DateTime Added { get; set; }
+    public DateTime? LastVerified { get; set; }
     public bool Exists { get; set; }
 
     public static EventFileResponse FromEventFile(EventFile file)
@@ -584,6 +602,7 @@ public class EventFileResponse
         return new EventFileResponse
         {
             Id = file.Id,
+            EventId = file.EventId,
             FilePath = file.FilePath,
             Size = file.Size,
             Quality = file.Quality,
@@ -592,9 +611,13 @@ public class EventFileResponse
             Codec = file.Codec,
             Source = file.Source,
             ReleaseGroup = file.ReleaseGroup,
+            OriginalTitle = file.OriginalTitle,
+            Languages = file.Languages ?? new List<string>(),
+            IndexerFlags = file.IndexerFlags,
             PartName = file.PartName,
             PartNumber = file.PartNumber,
             Added = file.Added,
+            LastVerified = file.LastVerified,
             Exists = file.Exists
         };
     }

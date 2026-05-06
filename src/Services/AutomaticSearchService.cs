@@ -821,39 +821,28 @@ public class AutomaticSearchService : IAutomaticSearchService
 
                 // Perform upgrade eligibility check if we have a relevant existing file.
                 // Upgrade logic:
-                // 1. Check if UpgradesAllowed is enabled on the quality profile
-                // 2. Check if existing file meets or exceeds CutoffQuality
-                // 3. Check if existing file meets or exceeds CutoffFormatScore
-                // 4. Compare quality/format scores to determine if new release is actually better
-                if (relevantFile != null && !string.IsNullOrEmpty(relevantFile.Quality))
+                // 1. Refuse auto-upgrade when existing quality scores 0 (Unknown/null/empty)
+                // 2. Check if UpgradesAllowed is enabled on the quality profile
+                // 3. Check if existing file meets or exceeds CutoffQuality
+                // 4. Check if existing file meets or exceeds CutoffFormatScore
+                // 5. Compare quality/format scores to determine if new release is actually better
+                if (relevantFile != null)
                 {
-                    // CHECK 1: UpgradesAllowed
-                    // If upgrades are disabled on the quality profile, don't upgrade existing files
-                    if (!qualityProfile.UpgradesAllowed)
-                    {
-                        result.Success = false;
-                        result.Message = $"Upgrades disabled on quality profile '{qualityProfile.Name}'. Existing file: {relevantFile.Quality}";
-                        _logger.LogInformation("[Automatic Search] Skipping - upgrades disabled on profile '{Profile}': {Title}",
-                            qualityProfile.Name, evt.Title);
-                        return result;
-                    }
-
-                    // Always recalculate quality scores from quality strings using deterministic scoring
-                    // Don't trust stored QualityScore — it may have been calculated with the old inverted logic
+                    // Always recalculate quality scores from quality strings using deterministic scoring.
+                    // Don't trust stored QualityScore. CalculateQualityScoreFromName returns 0 for null,
+                    // empty, "Unknown", or any other unparseable string, so this works as a single signal.
                     var existingQualityScore = ReleaseEvaluator.CalculateQualityScoreFromName(relevantFile.Quality);
                     var existingFormatScore = relevantFile.CustomFormatScore;
                     var newReleaseQualityScore = ReleaseEvaluator.CalculateQualityScoreFromName(bestRelease.Quality);
                     var newReleaseFormatScore = bestRelease.CustomFormatScore;
-
-                    _logger.LogInformation("[Automatic Search] Upgrade check - Existing: Quality={ExistingQuality} (score={ExistingQScore}), Format={ExistingFScore} | New: Quality={NewQuality} (score={NewQScore}), Format={NewFScore}",
-                        relevantFile.Quality, existingQualityScore, existingFormatScore,
-                        bestRelease.Quality, newReleaseQualityScore, newReleaseFormatScore);
 
                     // REFUSE-UNKNOWN-UPGRADE GATE: Library imports whose filenames lacked a quality keyword
                     // get persisted with Quality="Unknown" (or null/empty), which scores 0. Every indexer
                     // result then looks like an upgrade and the event gets re-downloaded, defeating the
                     // user's import. Refuse to auto-upgrade when we can't classify the existing file.
                     // Manual searches bypass this so users can still force an upgrade explicitly.
+                    // Sits ahead of every other check on purpose: catches null Quality, empty Quality,
+                    // and the literal "Unknown" string in one place.
                     if (!isManualSearch && existingQualityScore == 0)
                     {
                         result.Success = false;
@@ -862,6 +851,21 @@ public class AutomaticSearchService : IAutomaticSearchService
                             evt.Title, relevantFile.Quality ?? "null");
                         return result;
                     }
+
+                    // CHECK 1: UpgradesAllowed
+                    // If upgrades are disabled on the quality profile, don't upgrade existing files
+                    if (!qualityProfile.UpgradesAllowed)
+                    {
+                        result.Success = false;
+                        result.Message = $"Upgrades disabled on quality profile '{qualityProfile.Name}'. Existing file: {relevantFile.Quality ?? "null"}";
+                        _logger.LogInformation("[Automatic Search] Skipping - upgrades disabled on profile '{Profile}': {Title}",
+                            qualityProfile.Name, evt.Title);
+                        return result;
+                    }
+
+                    _logger.LogInformation("[Automatic Search] Upgrade check - Existing: Quality={ExistingQuality} (score={ExistingQScore}), Format={ExistingFScore} | New: Quality={NewQuality} (score={NewQScore}), Format={NewFScore}",
+                        relevantFile.Quality ?? "null", existingQualityScore, existingFormatScore,
+                        bestRelease.Quality, newReleaseQualityScore, newReleaseFormatScore);
 
                     // CHECK 2: CutoffQuality
                     // If existing file quality meets or exceeds cutoff, don't upgrade based on quality alone
@@ -896,7 +900,7 @@ public class AutomaticSearchService : IAutomaticSearchService
                     if (qualityCutoffMet && (formatCutoffMet || !qualityProfile.CutoffFormatScore.HasValue))
                     {
                         result.Success = false;
-                        result.Message = $"Cutoff met - existing file ({relevantFile.Quality}) meets quality profile requirements. No upgrade needed.";
+                        result.Message = $"Cutoff met - existing file ({relevantFile.Quality ?? "null"}) meets quality profile requirements. No upgrade needed.";
                         _logger.LogInformation("[Automatic Search] Skipping - cutoff met for: {Title}", evt.Title);
                         return result;
                     }
@@ -937,7 +941,7 @@ public class AutomaticSearchService : IAutomaticSearchService
                     if (!shouldUpgrade)
                     {
                         result.Success = false;
-                        result.Message = $"Existing file ({relevantFile.Quality}) is already good enough. New release is {upgradeReason}.";
+                        result.Message = $"Existing file ({relevantFile.Quality ?? "null"}) is already good enough. New release is {upgradeReason}.";
                         _logger.LogInformation("[Automatic Search] Skipping - {Reason}: {Title}", upgradeReason, evt.Title);
                         return result;
                     }

@@ -260,8 +260,10 @@ public class FileImportService : IFileImportService
             _logger.LogInformation("Found video file: {File} ({Size:N0} bytes)",
                 sourceFile, actualFileSize);
 
-            // Parse filename
-            var parsed = _parser.Parse(Path.GetFileName(sourceFile));
+            // Parse filename, augmenting with ffprobe inspection when the filename
+            // alone doesn't yield a Resolution+Source pair. download.Quality (the
+            // original release-title quality) still wins downstream when present.
+            var parsed = await _parser.ParseWithInspectionAsync(Path.GetFileName(sourceFile), sourceFile);
 
             // Build destination path (use actual file size for debrid symlink compatibility)
             // Pass download.Quality to preserve quality info from original release title (not re-parsed from downloaded filename)

@@ -217,6 +217,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddSportarrFileServices(this IServiceCollection services)
     {
         services.AddScoped<MediaFileParser>();
+        services.AddScoped<MediaFileInspector>();
         services.AddScoped<SportsFileNameParser>();
         services.AddScoped<FileNamingService>();
         services.AddScoped<FileRenameService>();

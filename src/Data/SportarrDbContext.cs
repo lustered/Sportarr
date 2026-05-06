@@ -126,6 +126,14 @@ public class SportarrDbContext : DbContext
             entity.Property(ef => ef.FilePath).IsRequired().HasMaxLength(1000);
             entity.Property(ef => ef.Quality).HasMaxLength(200);
             entity.Property(ef => ef.PartName).HasMaxLength(100);
+            entity.Property(ef => ef.IndexerFlags).HasMaxLength(200);
+            entity.Property(ef => ef.Languages).HasConversion(
+                v => System.Text.Json.JsonSerializer.Serialize(v, JsonSerializerOptionsProvider.Database),
+                v => System.Text.Json.JsonSerializer.Deserialize<List<string>>(v, JsonSerializerOptionsProvider.Database) ?? new List<string>()
+            ).Metadata.SetValueComparer(new ValueComparer<List<string>>(
+                (c1, c2) => c1 != null && c2 != null && c1.SequenceEqual(c2),
+                c => c.Aggregate(0, (a, v) => HashCode.Combine(a, v.GetHashCode())),
+                c => c.ToList()));
             entity.HasOne(ef => ef.Event)
                   .WithMany(e => e.Files)
                   .HasForeignKey(ef => ef.EventId)
