@@ -111,6 +111,14 @@ public class Config
 
     // Indexer Settings
     public int IndexerRetention { get; set; } = 0; // days - releases older than this won't be grabbed (0 = disabled)
+
+    /// <summary>
+    /// Grace period in days before the disk scanner hard-deletes an EventFile
+    /// row whose path has been continuously missing. Protects restore-to-new-
+    /// server flows, transient NAS unmounts, and similar scenarios. Default 30
+    /// days. Set to 0 to never auto-delete (user prunes manually).
+    /// </summary>
+    public int EventFileMissingDeleteAfterDays { get; set; } = 30;
     public bool PreferIndexerFlags { get; set; } = true; // prefer releases with special indexer flags (Freeleech, Scene, etc.)
 
     // Queue Threshold Settings (Huntarr-style)

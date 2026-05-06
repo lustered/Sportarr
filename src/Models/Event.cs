@@ -365,6 +365,17 @@ public class EventFile
     public bool Exists { get; set; } = true;
 
     /// <summary>
+    /// Timestamp the file first went missing (Exists transitioned true to false).
+    /// Cleared when the file is found again. The disk scanner uses this with
+    /// Config.EventFileMissingDeleteAfterDays as a grace period before hard-
+    /// deleting the row. Protects against transient unreachability — backup
+    /// restored to a new server, NAS reconnects, container restart racing the
+    /// network mount, etc. — without permanently leaking rows for files the
+    /// user has actually deleted.
+    /// </summary>
+    public DateTime? MissingSince { get; set; }
+
+    /// <summary>
     /// Original release title from the indexer (the grabbed filename before renaming)
     /// Useful for verifying correct content was downloaded (e.g., checking "Prelims" vs "Main Card")
     /// </summary>

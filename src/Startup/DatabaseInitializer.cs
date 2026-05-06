@@ -1199,6 +1199,27 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify EventFiles.IndexerFlags column: {ex.Message}");
         }
 
+        // Ensure MissingSince column exists in EventFiles table (grace-period
+        // tracking for files that go transiently unreachable; disk scanner
+        // uses this with Config.EventFileMissingDeleteAfterDays before doing
+        // any hard-delete).
+        try
+        {
+            var checkMsColumnSql = "SELECT COUNT(*) FROM pragma_table_info('EventFiles') WHERE name='MissingSince'";
+            var msColumnExists = db.Database.SqlQueryRaw<int>(checkMsColumnSql).AsEnumerable().FirstOrDefault();
+
+            if (msColumnExists == 0)
+            {
+                Console.WriteLine("[Sportarr] EventFiles.MissingSince column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE EventFiles ADD COLUMN MissingSince TEXT");
+                Console.WriteLine("[Sportarr] EventFiles.MissingSince column added successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not verify EventFiles.MissingSince column: {ex.Message}");
+        }
+
         // Ensure DownloadId column exists in GrabHistory table (for external download detection)
         try
         {

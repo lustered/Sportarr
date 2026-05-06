@@ -1229,6 +1229,9 @@ namespace Sportarr.Api.Migrations
                     b.Property<DateTime?>("LastVerified")
                         .HasColumnType("TEXT");
 
+                    b.Property<DateTime?>("MissingSince")
+                        .HasColumnType("TEXT");
+
                     b.Property<string>("OriginalTitle")
                         .HasColumnType("TEXT");
 
