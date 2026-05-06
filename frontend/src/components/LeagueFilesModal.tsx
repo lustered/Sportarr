@@ -309,26 +309,42 @@ export default function LeagueFilesModal({
                       </p>
                     )}
                   </div>
-                  {selectedIds.size > 0 && (
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-300 hidden md:inline">
-                        {selectedIds.size} selected
-                      </span>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {displayFiles.length > 0 && (
                       <button
-                        onClick={() => setBulkEditOpen(true)}
-                        className="px-3 py-1.5 bg-blue-700 hover:bg-blue-600 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5"
+                        onClick={() => {
+                          const all = new Set(displayFiles.map((f) => f.id));
+                          const allSelected = displayFiles.every((f) => selectedIds.has(f.id));
+                          setSelectedIds(allSelected ? new Set() : all);
+                        }}
+                        className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg transition-colors"
                       >
-                        <PencilIcon className="w-4 h-4" />
-                        Edit Selected
+                        {displayFiles.length > 0 && displayFiles.every((f) => selectedIds.has(f.id))
+                          ? 'Deselect All'
+                          : 'Select All'}
                       </button>
-                      <button
-                        onClick={clearSelected}
-                        className="px-2 py-1 text-xs text-gray-300 hover:text-white"
-                      >
-                        Clear
-                      </button>
-                    </div>
-                  )}
+                    )}
+                    {selectedIds.size > 0 && (
+                      <>
+                        <span className="text-xs text-gray-300 hidden md:inline">
+                          {selectedIds.size} selected
+                        </span>
+                        <button
+                          onClick={() => setBulkEditOpen(true)}
+                          className="px-3 py-1.5 bg-blue-700 hover:bg-blue-600 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-1.5"
+                        >
+                          <PencilIcon className="w-4 h-4" />
+                          Edit Selected
+                        </button>
+                        <button
+                          onClick={clearSelected}
+                          className="px-2 py-1 text-xs text-gray-300 hover:text-white"
+                        >
+                          Clear
+                        </button>
+                      </>
+                    )}
+                  </div>
                   <button
                     onClick={onClose}
                     className="text-gray-400 hover:text-white transition-colors flex-shrink-0"
@@ -561,6 +577,8 @@ export default function LeagueFilesModal({
         fileIds={[editFile.id]}
         initialValues={fileToEditorValues(editFile)}
         showPartFields={true}
+        leagueId={leagueId}
+        eventId={editFile.eventId}
         onSaved={async () => {
           await queryClient.refetchQueries({ queryKey: ['league-files', leagueId] });
         }}
@@ -576,6 +594,7 @@ export default function LeagueFilesModal({
         fileIds={[...selectedIds]}
         initialValues={{}}
         showPartFields={true}
+        leagueId={leagueId}
         onSaved={async () => {
           clearSelected();
           await queryClient.refetchQueries({ queryKey: ['league-files', leagueId] });

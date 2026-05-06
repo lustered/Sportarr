@@ -325,6 +325,11 @@ public class ParsedFileInfo
     public string? Edition { get; set; }
     public string? Language { get; set; }
     public bool IsProperOrRepack { get; set; }
+    /// <summary>Audio-stream language tags read from ffprobe (e.g. ["eng", "spa"]).
+    /// Populated by MediaFileInspector when filename parsing comes up short on
+    /// the Resolution / Source fields. Empty list if ffprobe wasn't run or
+    /// the file had no language tags.</summary>
+    public List<string> DetectedLanguages { get; set; } = new();
 }
 
 // File naming tokens and their replacements

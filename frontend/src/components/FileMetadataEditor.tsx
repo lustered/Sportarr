@@ -40,6 +40,9 @@ export interface FileMetadataEditorProps {
   hideFields?: Array<keyof FileMetadataEditorValues>;
   /** Disable all inputs (read-only mode). */
   disabled?: boolean;
+  /** Optional context — drives league-aware part-name and part-number options. */
+  leagueId?: number;
+  eventId?: number;
 }
 
 interface KnownLists {
@@ -47,12 +50,15 @@ interface KnownLists {
   sources: string[];
   codecs: string[];
   indexerFlags: string[];
+  releaseGroups: string[];
+  parts: string[];
+  maxPartNumber: number;
 }
 
-// Module-scoped cache so multiple editor instances on the same page don't
-// each fetch the dropdown lists.
-let knownListsCache: KnownLists | null = null;
-let knownListsPromise: Promise<KnownLists> | null = null;
+// Per-context cache so the same editor opened on a different event doesn't
+// reuse the previous event's part list.
+const knownListsCache = new Map<string, KnownLists>();
+const knownListsInflight = new Map<string, Promise<KnownLists>>();
 
 const FALLBACK_LISTS: KnownLists = {
   qualities: [
@@ -63,25 +69,35 @@ const FALLBACK_LISTS: KnownLists = {
     'HDTV-2160p', 'WEBDL-2160p', 'WEBRip-2160p', 'Bluray-2160p', 'Bluray-2160p Remux',
     'Raw-HD',
   ],
-  sources: ['WEBDL', 'WEBRip', 'BLURAY', 'HDTV', 'DVDRIP', 'RAWHD'],
-  codecs: ['x264', 'x265', 'AV1', 'VP9', 'XviD', 'MPEG2'],
+  sources: ['WEBDL', 'WEB-DL', 'WEBRip', 'BLURAY', 'Blu-Ray', 'BDRip', 'HDTV', 'PDTV', 'DVDRIP', 'DVD', 'RAWHD'],
+  codecs: ['x264', 'H.264', 'AVC', 'x265', 'H.265', 'HEVC', 'AV1', 'VP9', 'MPEG2', 'XviD', 'DivX'],
   indexerFlags: ['Freeleech', 'Halfleech', 'Internal', 'Scene', 'Nuked', 'DoubleUpload'],
+  releaseGroups: [],
+  parts: [],
+  maxPartNumber: 0,
 };
 
-async function fetchKnownLists(): Promise<KnownLists> {
-  if (knownListsCache) return knownListsCache;
-  if (knownListsPromise) return knownListsPromise;
-  knownListsPromise = apiClient
-    .get<KnownLists>('/event-files/known-qualities')
+async function fetchKnownLists(leagueId?: number, eventId?: number): Promise<KnownLists> {
+  const key = `${leagueId ?? ''}|${eventId ?? ''}`;
+  const cached = knownListsCache.get(key);
+  if (cached) return cached;
+  const inflight = knownListsInflight.get(key);
+  if (inflight) return inflight;
+  const params: Record<string, number> = {};
+  if (leagueId) params.leagueId = leagueId;
+  if (eventId) params.eventId = eventId;
+  const promise = apiClient
+    .get<KnownLists>('/event-files/known-qualities', { params })
     .then((res) => {
-      knownListsCache = res.data;
+      knownListsCache.set(key, res.data);
       return res.data;
     })
     .catch(() => {
-      knownListsCache = FALLBACK_LISTS;
+      knownListsCache.set(key, FALLBACK_LISTS);
       return FALLBACK_LISTS;
     });
-  return knownListsPromise;
+  knownListsInflight.set(key, promise);
+  return promise;
 }
 
 const COMMON_LANGUAGES = [
@@ -99,8 +115,13 @@ export default function FileMetadataEditor({
   onChange,
   hideFields = [],
   disabled = false,
+  leagueId,
+  eventId,
 }: FileMetadataEditorProps) {
-  const [lists, setLists] = useState<KnownLists | null>(knownListsCache ?? FALLBACK_LISTS);
+  const cacheKey = `${leagueId ?? ''}|${eventId ?? ''}`;
+  const [lists, setLists] = useState<KnownLists | null>(
+    knownListsCache.get(cacheKey) ?? FALLBACK_LISTS,
+  );
   const [languageToAdd, setLanguageToAdd] = useState('');
   const [flagsList, setFlagsList] = useState<string[]>(() =>
     splitFlags(value.indexerFlags));
@@ -111,10 +132,12 @@ export default function FileMetadataEditor({
   const [customQuality, setCustomQuality] = useState(false);
   const [customSource, setCustomSource] = useState(false);
   const [customCodec, setCustomCodec] = useState(false);
+  const [customReleaseGroup, setCustomReleaseGroup] = useState(false);
+  const [customPartName, setCustomPartName] = useState(false);
 
   useEffect(() => {
-    if (!knownListsCache) fetchKnownLists().then(setLists);
-  }, []);
+    fetchKnownLists(leagueId, eventId).then(setLists);
+  }, [leagueId, eventId]);
 
   // Keep flagsList in sync if value.indexerFlags changes externally.
   useEffect(() => {
@@ -189,16 +212,30 @@ export default function FileMetadataEditor({
       )}
 
       {!hidden('releaseGroup') && (
-        <Field label="Release Group">
-          <input
-            type="text"
-            className={inputClass(disabled)}
-            value={value.releaseGroup ?? ''}
-            onChange={(e) => update({ releaseGroup: e.target.value })}
-            placeholder="GROUP, NTb, FLUX…"
+        (lists?.releaseGroups?.length ?? 0) > 0 ? (
+          <SelectField
+            label="Release Group"
+            value={value.releaseGroup}
+            options={lists?.releaseGroups ?? []}
+            onChange={(v) => update({ releaseGroup: v })}
             disabled={disabled}
+            customMode={customReleaseGroup}
+            onCustomToggle={setCustomReleaseGroup}
+            allowEmpty
           />
-        </Field>
+        ) : (
+          // Empty library — no DB-known groups yet, fall back to free text.
+          <Field label="Release Group">
+            <input
+              type="text"
+              className={inputClass(disabled)}
+              value={value.releaseGroup ?? ''}
+              onChange={(e) => update({ releaseGroup: e.target.value })}
+              placeholder="GROUP, NTb, FLUX…"
+              disabled={disabled}
+            />
+          </Field>
+        )
       )}
 
       {!hidden('originalTitle') && (
@@ -317,32 +354,76 @@ export default function FileMetadataEditor({
       )}
 
       {!hidden('partName') && (
-        <Field label="Part Name">
-          <input
-            type="text"
-            className={inputClass(disabled)}
-            value={value.partName ?? ''}
-            onChange={(e) => update({ partName: e.target.value })}
-            placeholder="Prelims, Main Card…"
+        (lists?.parts?.length ?? 0) > 0 ? (
+          // League-specific parts (UFC: Early Prelims/Prelims/Main Card,
+          // ONE: Lead Card/Main Card, etc). For leagues without defined
+          // segments the fall-through renders a plain text input.
+          <SelectField
+            label="Part Name"
+            value={value.partName}
+            options={lists?.parts ?? []}
+            onChange={(v) => {
+              // When the user picks a known part, also auto-set PartNumber
+              // from the segment's index in the canonical list (1-based).
+              const parts = lists?.parts ?? [];
+              const idx = v ? parts.findIndex((p) => p.toLowerCase() === v.toLowerCase()) : -1;
+              if (idx >= 0) {
+                onChange({ ...value, partName: v, partNumber: idx + 1 });
+              } else {
+                update({ partName: v });
+              }
+            }}
             disabled={disabled}
+            customMode={customPartName}
+            onCustomToggle={setCustomPartName}
+            allowEmpty
           />
-        </Field>
+        ) : (
+          <Field label="Part Name">
+            <input
+              type="text"
+              className={inputClass(disabled)}
+              value={value.partName ?? ''}
+              onChange={(e) => update({ partName: e.target.value })}
+              placeholder="No multi-part segments defined for this league"
+              disabled={disabled}
+            />
+          </Field>
+        )
       )}
 
       {!hidden('partNumber') && (
-        <Field label="Part Number">
-          <input
-            type="number"
-            min={1}
-            className={inputClass(disabled)}
-            value={value.partNumber ?? ''}
-            onChange={(e) =>
-              update({ partNumber: e.target.value === '' ? null : parseInt(e.target.value, 10) })
-            }
-            placeholder="1, 2, 3…"
-            disabled={disabled}
-          />
-        </Field>
+        (lists?.maxPartNumber ?? 0) > 0 ? (
+          <Field label="Part Number">
+            <select
+              className={inputClass(disabled)}
+              value={value.partNumber ?? ''}
+              onChange={(e) =>
+                update({ partNumber: e.target.value === '' ? null : parseInt(e.target.value, 10) })
+              }
+              disabled={disabled}
+            >
+              <option value="">— not set —</option>
+              {Array.from({ length: lists?.maxPartNumber ?? 0 }, (_, i) => i + 1).map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+          </Field>
+        ) : (
+          <Field label="Part Number">
+            <input
+              type="number"
+              min={1}
+              className={inputClass(disabled)}
+              value={value.partNumber ?? ''}
+              onChange={(e) =>
+                update({ partNumber: e.target.value === '' ? null : parseInt(e.target.value, 10) })
+              }
+              placeholder="No multi-part segments defined for this league"
+              disabled={disabled}
+            />
+          </Field>
+        )
       )}
     </div>
   );
@@ -379,11 +460,21 @@ function inputClass(disabled: boolean) {
 }
 
 /**
- * Closed-list select with a "Custom…" escape hatch. Native `<select>` matches
- * the rest of the app's dropdowns; clicking shows every option in one go,
- * not just substring matches. When the bound value isn't one of the canonical
- * options it gets added as a sentinel top option so the user's existing
- * data is preserved and visible.
+ * Closed-list select with a "Custom…" escape hatch.
+ *
+ * Two display modes:
+ * - dropdown (default): native <select> showing canonical options + the
+ *   current value (added at the top if non-canonical, e.g. "WEB-DL" when
+ *   the canonical list has "WEBDL"). User picks one and that becomes the
+ *   stored value verbatim.
+ * - custom: free-text input, entered when the user selects "Custom…" from
+ *   the dropdown. "List…" button next to it returns to dropdown mode.
+ *
+ * `customMode` is purely user-controlled: it's only set true when the user
+ * clicks "Custom…", and false when the user clicks "List…". The component
+ * does NOT auto-flip into custom mode just because the stored value isn't
+ * in the canonical list — the user-value-as-extra-option pattern handles
+ * that case while keeping the UI predictable.
  */
 function SelectField({
   label,
@@ -404,15 +495,18 @@ function SelectField({
   onCustomToggle: (b: boolean) => void;
   allowEmpty?: boolean;
 }) {
-  // Show the existing value as a select option even if it's not in the canonical
-  // list. Avoids hiding "TS", "Unknown", or odd legacy strings.
-  const valueIsCanonical = value != null && options.some((o) => o.toLowerCase() === value.toLowerCase());
-  const showInline = customMode || (value != null && !valueIsCanonical && !options.includes(value));
+  // Augment the option list with the current value when it isn't already in
+  // the canonical list. Means a file imported with Source="WEB-DL" still has
+  // "WEB-DL" as a visible/selectable dropdown option even though the canonical
+  // form is "WEBDL". Comparison is case-insensitive to also keep "BluRay" /
+  // "BLURAY" / "bluray" from being shown twice.
+  const inCanonical = value != null && value !== '' && options.some((o) => o.toLowerCase() === value.toLowerCase());
+  const augmentedOptions = (value && !inCanonical) ? [value, ...options] : options;
 
   return (
     <Field label={label}>
       <div className="flex gap-2">
-        {showInline ? (
+        {customMode ? (
           <>
             <input
               type="text"
@@ -421,7 +515,7 @@ function SelectField({
               onChange={(e) => onChange(e.target.value || undefined)}
               placeholder={`Custom ${label.toLowerCase()}`}
               disabled={disabled}
-              autoFocus={customMode}
+              autoFocus
             />
             <button
               type="button"
@@ -451,7 +545,7 @@ function SelectField({
             disabled={disabled}
           >
             {allowEmpty && <option value={NO_VALUE}>— not set —</option>}
-            {options.map((o) => (
+            {augmentedOptions.map((o) => (
               <option key={o} value={o}>{o}</option>
             ))}
             <option value={CUSTOM_OPTION}>Custom…</option>

@@ -141,6 +141,12 @@ public class LibraryImportService
                             ParsedSport = sport,
                             ParsedDate = eventDate,
                             Quality = parsedInfo.Quality,
+                            Source = parsedInfo.Source,
+                            Codec = parsedInfo.VideoCodec,
+                            AudioCodec = parsedInfo.AudioCodec,
+                            ReleaseGroup = parsedInfo.ReleaseGroup,
+                            OriginalTitle = filename,
+                            Languages = parsedInfo.DetectedLanguages,
                             ExistingEventId = linkedEvent?.Id,
                             MatchedEventTitle = BuildCurrentLabel(linkedEvent, existingEventFile)
                         });
@@ -206,6 +212,12 @@ public class LibraryImportService
                         ParsedSport = sport,
                         ParsedDate = eventDate,
                         Quality = parsedInfo.Quality,
+                        Source = parsedInfo.Source,
+                        Codec = parsedInfo.VideoCodec,
+                        AudioCodec = parsedInfo.AudioCodec,
+                        ReleaseGroup = parsedInfo.ReleaseGroup,
+                        OriginalTitle = filename,
+                        Languages = parsedInfo.DetectedLanguages,
                         MatchedEventId = matchedEvent?.Id,
                         MatchedEventTitle = matchedEvent?.Title,
                         MatchedLeagueName = matchedEvent?.League?.Name,
@@ -1519,6 +1531,22 @@ public class ImportableFile
     public string? ParsedSport { get; set; }
     public DateTime? ParsedDate { get; set; }
     public string? Quality { get; set; }
+    /// <summary>Source bucket (WEBDL / BLURAY / HDTV / DVDRIP / RAWHD) parsed from the
+    /// filename, with extension hint and ffprobe augmentation as fallbacks.</summary>
+    public string? Source { get; set; }
+    /// <summary>Video codec normalized form (x264 / x265 / AV1 / VP9 / MPEG2 / XviD)
+    /// — falls back to ffprobe inspection when the filename has no codec token.</summary>
+    public string? Codec { get; set; }
+    /// <summary>Audio codec (AAC / AC3 / E-AC-3 / DTS / TrueHD / FLAC / Opus / MP3) —
+    /// from filename or ffprobe.</summary>
+    public string? AudioCodec { get; set; }
+    /// <summary>Release group token from filename's trailing "-GROUP".</summary>
+    public string? ReleaseGroup { get; set; }
+    /// <summary>The full original filename without extension — preserved verbatim so
+    /// the user can re-search the indexer with this exact title later.</summary>
+    public string? OriginalTitle { get; set; }
+    /// <summary>Languages detected by ffprobe from audio stream language tags.</summary>
+    public List<string> Languages { get; set; } = new();
     public int? MatchedEventId { get; set; }
     public string? MatchedEventTitle { get; set; }
     public string? MatchedLeagueName { get; set; }

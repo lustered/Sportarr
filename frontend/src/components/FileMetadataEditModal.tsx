@@ -27,6 +27,9 @@ export interface FileMetadataEditModalProps {
   showPartFields?: boolean;
   /** Called after a successful save with the updated EventFile DTOs. */
   onSaved?: (updated: any[]) => void;
+  /** Context for league-aware Part dropdowns + DB-known release-group list. */
+  leagueId?: number;
+  eventId?: number;
 }
 
 export default function FileMetadataEditModal({
@@ -36,6 +39,8 @@ export default function FileMetadataEditModal({
   initialValues,
   showPartFields = true,
   onSaved,
+  leagueId,
+  eventId,
 }: FileMetadataEditModalProps) {
   const [values, setValues] = useState<FileMetadataEditorValues>(initialValues);
   const [saving, setSaving] = useState(false);
@@ -60,18 +65,33 @@ export default function FileMetadataEditModal({
     if (fileIds.length === 0) return;
     setSaving(true);
     try {
+      const patch = stripUntouched(values, initialValues);
+      // Log the diff so it's easy to verify in DevTools that the user-visible
+      // edits actually translate into a non-empty request body. An empty
+      // patch is the most common cause of "save toast appeared but nothing
+      // changed" — the editor's local state never picked up the keystrokes.
+      // eslint-disable-next-line no-console
+      console.log('[FileMetadataEdit] saving', { fileIds, isBulk, patch, initialValues, values });
+
+      if (Object.keys(patch).length === 0) {
+        toast.warning('No changes to save');
+        setSaving(false);
+        return;
+      }
+
       let response;
       if (isBulk) {
         response = await apiClient.put('/event-files/editor', {
           eventFileIds: fileIds,
-          ...stripUntouched(values, initialValues),
+          ...patch,
         });
         toast.success(`Updated ${fileIds.length} files`);
       } else {
-        response = await apiClient.put(`/event-files/${fileIds[0]}`,
-          stripUntouched(values, initialValues));
+        response = await apiClient.put(`/event-files/${fileIds[0]}`, patch);
         toast.success('File updated');
       }
+      // eslint-disable-next-line no-console
+      console.log('[FileMetadataEdit] server response', response.data);
       onSaved?.(Array.isArray(response.data) ? response.data : [response.data]);
       onClose();
     } catch (err: any) {
@@ -80,6 +100,8 @@ export default function FileMetadataEditModal({
         ?? err?.message
         ?? 'Save failed';
       toast.error(detail);
+      // eslint-disable-next-line no-console
+      console.error('[FileMetadataEdit] save failed', err);
     } finally {
       setSaving(false);
     }
@@ -136,6 +158,8 @@ export default function FileMetadataEditModal({
                     value={values}
                     onChange={setValues}
                     hideFields={hideFields}
+                    leagueId={leagueId}
+                    eventId={eventId}
                   />
                 </div>
 

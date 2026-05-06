@@ -31,6 +31,16 @@ interface ImportableFile {
   parsedSport?: string;
   parsedDate?: string;
   quality?: string;
+  // The full parser+ffprobe output so the metadata editor pre-fills with
+  // everything Sportarr could detect, not just Quality. Without these the
+  // user sees "— not set —" on every field even though we already know
+  // the values from the file scan.
+  source?: string;
+  codec?: string;
+  audioCodec?: string;
+  releaseGroup?: string;
+  originalTitle?: string;
+  languages?: string[];
   matchedEventId?: number;
   matchedEventTitle?: string;
   matchedLeagueName?: string;
@@ -1076,9 +1086,17 @@ const LibraryImportPage: React.FC = () => {
                         ...scanResult.unmatchedFiles,
                         ...scanResult.alreadyInLibrary,
                       ].find((f) => f.filePath === editorOpenForFile);
+                      // Pre-fill from EVERY parser/ffprobe output, not just
+                      // quality. Without this, the user sees blank dropdowns
+                      // for Source/Codec/ReleaseGroup/etc even though the
+                      // scan already detected them.
                       const initial: FileMetadataEditorValues = fileMetadataOverrides.get(editorOpenForFile) ?? {
                         quality: file?.quality,
-                        languages: [],
+                        source: file?.source,
+                        codec: file?.codec,
+                        releaseGroup: file?.releaseGroup,
+                        originalTitle: file?.originalTitle ?? (file?.fileName?.replace(/\.[^.]+$/, '') ?? undefined),
+                        languages: file?.languages ?? [],
                       };
                       return (
                         <>
@@ -1094,10 +1112,11 @@ const LibraryImportPage: React.FC = () => {
                                 return m;
                               });
                             }}
+                            leagueId={file?.matchedEventId ? undefined : undefined}
                           />
                           <p className="mt-3 text-xs text-gray-500">
-                            Empty fields here keep the parser's value. Anything you fill in will be applied
-                            to the file after it imports.
+                            Pre-filled from filename + ffprobe inspection. Edit anything that's wrong
+                            before importing — your changes will be applied to the new file.
                           </p>
                         </>
                       );

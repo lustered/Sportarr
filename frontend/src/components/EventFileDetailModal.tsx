@@ -300,6 +300,20 @@ export default function EventFileDetailModal({
                       </div>
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
+                      {existingFiles.length > 0 && (
+                        <button
+                          onClick={() => {
+                            const allIds = new Set(existingFiles.map((f) => f.id));
+                            const allSelected = existingFiles.every((f) => selectedIds.has(f.id));
+                            setSelectedIds(allSelected ? new Set() : allIds);
+                          }}
+                          className="px-2 md:px-3 py-1 md:py-1.5 bg-gray-700 hover:bg-gray-600 text-white text-xs md:text-sm rounded transition-colors"
+                        >
+                          {existingFiles.length > 0 && existingFiles.every((f) => selectedIds.has(f.id))
+                            ? 'Deselect All'
+                            : 'Select All'}
+                        </button>
+                      )}
                       {selectedIds.size > 0 && (
                         <>
                           <span className="text-xs text-gray-300">
@@ -648,6 +662,7 @@ export default function EventFileDetailModal({
           fileIds={[editFile.id]}
           initialValues={fileToEditorValues(editFile)}
           showPartFields={isFightingSport}
+          eventId={eventId}
           onSaved={async (updated) => {
             if (updated && updated[0]) {
               const u = updated[0];
@@ -667,6 +682,7 @@ export default function EventFileDetailModal({
           fileIds={[...selectedIds]}
           initialValues={{}}
           showPartFields={isFightingSport}
+          eventId={eventId}
           onSaved={async (updated) => {
             if (updated && updated.length) {
               const byId = new Map(updated.map((u: any) => [u.id, u]));

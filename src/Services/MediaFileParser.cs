@@ -73,6 +73,21 @@ public class MediaFileParser
         if (string.IsNullOrEmpty(parsed.AudioCodec) && !string.IsNullOrEmpty(probed.AudioCodec))
             parsed.AudioCodec = probed.AudioCodec;
 
+        // ffprobe also gives us the audio-stream language tags. Surface them
+        // separately on ParsedFileInfo so the import flow can pre-fill the
+        // Languages chip-list in the metadata editor.
+        if (probed.Languages != null && probed.Languages.Count > 0)
+        {
+            foreach (var lang in probed.Languages)
+            {
+                if (!string.IsNullOrWhiteSpace(lang) &&
+                    !parsed.DetectedLanguages.Contains(lang, StringComparer.OrdinalIgnoreCase))
+                {
+                    parsed.DetectedLanguages.Add(lang);
+                }
+            }
+        }
+
         if (augmented)
         {
             parsed.Quality = BuildQualityFromParts(parsed.Resolution, parsed.Source);
