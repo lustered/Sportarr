@@ -400,4 +400,40 @@ public class MediaFileParserTests
 
         result.Should().NotBeNull();
     }
+
+    // ============================================================
+    // Release-group rejection: trailing tokens that are actually
+    // quality / resolution / source / codec markers must NOT be
+    // returned as the release group. The naive regex captures the
+    // last "-XXX" run, so files like "Show.WEBDL-2160p" fall through
+    // to "2160p" without these guards.
+    // ============================================================
+
+    [Theory]
+    [InlineData("Formula 1 - S2015E03 - Malaysian Grand Prix Qualifying - WEBDL-2160p")]
+    [InlineData("EPL.match.1080p.WEB-DL")]
+    [InlineData("Show.S01E01.HDTV-720p")]
+    [InlineData("Game.S2025E01.BluRay-2160p")]
+    [InlineData("Show.S01E01.x265")]
+    [InlineData("Show.S01E01.HEVC")]
+    [InlineData("Show.S01E01.AAC")]
+    public void Parse_ShouldNotReturnQualityTokenAsReleaseGroup(string filename)
+    {
+        var result = _parser.Parse(filename);
+
+        result.ReleaseGroup.Should().BeNull(
+            because: "trailing quality / resolution / codec / audio tokens are not release groups");
+    }
+
+    [Theory]
+    [InlineData("EPL.2026.05.02.Arsenal.vs.Fulham.1080p.WEB.H264-BILLIE", "BILLIE")]
+    [InlineData("UFC.300.2024.04.13.1080p.WEB-DL.x264-DARKSPORT", "DARKSPORT")]
+    [InlineData("Show.S01E01.1080p.WEB.x264-NTb", "NTb")]
+    [InlineData("Game.S2025E01.WEBDL-1080p-FLUX", "FLUX")]
+    public void Parse_ShouldExtractGenuineReleaseGroups(string filename, string expectedGroup)
+    {
+        var result = _parser.Parse(filename);
+
+        result.ReleaseGroup.Should().Be(expectedGroup);
+    }
 }

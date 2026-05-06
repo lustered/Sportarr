@@ -32,12 +32,13 @@ public class MediaFileParser
     }
 
     /// <summary>
-    /// Parse a filename and, when the filename came up short, augment with
-    /// ffprobe inspection of the file's actual binary metadata. The third tier
-    /// of the parser pipeline (regex -> extension hint -> file inspection).
-    ///
-    /// Sonarr-parity entry point: pass a real on-disk path so videos with
-    /// uninformative names ("match.mkv") still get the right Quality recorded.
+    /// Parse a filename and augment with ffprobe inspection of the file's
+    /// actual binary metadata. Sonarr-parity behavior — ffprobe always runs
+    /// when a real on-disk path is supplied, not just as a fallback when
+    /// filename parsing came up short. The merge logic only fills fields the
+    /// filename left null, so an informative release name still wins for
+    /// Resolution / Source while ffprobe fills the codec and audio-language
+    /// tags that release names rarely include.
     /// </summary>
     public async Task<ParsedFileInfo> ParseWithInspectionAsync(
         string filename,
@@ -45,11 +46,6 @@ public class MediaFileParser
         CancellationToken cancellationToken = default)
     {
         var parsed = Parse(filename);
-
-        // Skip the binary read when filename parsing already delivered both
-        // dimensions of the verbose Quality string (resolution + source).
-        if (!string.IsNullOrEmpty(parsed.Resolution) && !string.IsNullOrEmpty(parsed.Source))
-            return parsed;
 
         if (_inspector == null || string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
             return parsed;
@@ -360,12 +356,50 @@ public class MediaFileParser
 
         var group = match.Groups[1].Value;
 
-        // Exclude common quality/source indicators that might be matched
-        var excludedGroups = new[] { "DL", "WEB", "HD", "SD", "UHD" };
-        if (excludedGroups.Contains(group.ToUpper()))
-            return null;
+        // Reject tokens that are actually quality / resolution / source / codec
+        // / audio markers. The trailing "-TOKEN" pattern catches scene-style
+        // group names but also matches "WEBDL-2160p" -> "2160p", which is
+        // never a release group. The legacy DL/WEB/HD/SD/UHD list missed
+        // resolution tokens and codecs entirely.
+        if (LooksLikeQualityToken(group)) return null;
 
         return group;
+    }
+
+    /// <summary>
+    /// Heuristic: does this token look like a quality / resolution / source /
+    /// codec / audio descriptor rather than a release-group name? Used to
+    /// short-circuit the trailing-hyphen release-group regex on filenames
+    /// like "Match.WEBDL-2160p" where the trailing token is technical
+    /// metadata, not a group.
+    /// </summary>
+    private static bool LooksLikeQualityToken(string token)
+    {
+        if (string.IsNullOrEmpty(token)) return true;
+        var t = token.ToUpperInvariant();
+
+        // Resolutions
+        if (Regex.IsMatch(t, @"^(360|480|540|576|720|1080|1440|2160)P?I?$")) return true;
+        // Resolution shorthand
+        if (t is "4K" or "UHD" or "FHD" or "HD" or "SD" or "QHD" or "FULLHD") return true;
+        // Sources
+        if (t is "WEBDL" or "WEB" or "WEBRIP" or "WEBHD" or "WEBCAP" or "WEBMUX"
+            or "BLURAY" or "BLU" or "BD" or "BDRIP" or "BRRIP" or "BDREMUX" or "BDMUX"
+            or "HDDVD"
+            or "HDTV" or "PDTV" or "SDTV" or "DSR" or "TVRIP"
+            or "DVD" or "DVDRIP" or "DVDR" or "DVD5" or "DVD9"
+            or "RAWHD" or "REMUX" or "VHSRIP"
+            or "TS" or "TELESYNC" or "HDCAM" or "CAM" or "TELECINE"
+            or "DL" or "RIP" or "MUX") return true;
+        // Video codecs
+        if (t is "X264" or "X265" or "H264" or "H265" or "HEVC" or "AVC"
+            or "XVID" or "DIVX" or "AV1" or "VP9" or "MPEG2" or "MPEG4") return true;
+        // Audio codecs / channel layouts
+        if (t is "AAC" or "AC3" or "EAC3" or "DD" or "DDP" or "DTS" or "DTSHD" or "DTSMA"
+            or "TRUEHD" or "FLAC" or "MP3" or "OPUS" or "ATMOS"
+            or "5" or "7" or "2") return true;
+
+        return false;
     }
 
     private string? ExtractEdition(string cleanName)
