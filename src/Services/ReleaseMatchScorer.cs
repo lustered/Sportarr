@@ -450,13 +450,37 @@ public class ReleaseMatchScorer
         if (gameMatch.Success && int.TryParse(gameMatch.Groups[1].Value, out var gameNum))
             parsed.GameNumber = gameNum;
 
-        // Extract date (YYYY.MM.DD or YYYY-MM-DD)
+        // Extract date. Two formats encountered in the wild:
+        //   YYYY.MM.DD / YYYY-MM-DD  - canonical scene order, US-style trackers
+        //   DD.MM.YYYY / DD-MM-YYYY  - European trackers (720pier, sports-EU)
+        // Prefer YYYY-first when both could match; fall through to DD-first if
+        // it didn't. Without DD-first the date is silently dropped on releases
+        // like "NHL SC 2026 / Round 1 / Game 6 / 30.04.2026 / ..." and the
+        // matcher can't bonus the day, hurting overall score.
         var dateMatch = Regex.Match(title, @"\b(20[2-9]\d)[.\-](\d{2})[.\-](\d{2})\b");
         if (dateMatch.Success)
         {
             parsed.Year = int.Parse(dateMatch.Groups[1].Value);
             parsed.Month = int.Parse(dateMatch.Groups[2].Value);
             parsed.Day = int.Parse(dateMatch.Groups[3].Value);
+        }
+        else
+        {
+            // DD.MM.YYYY / DD-MM-YYYY. Day must be 01-31, month 01-12 — if a
+            // string happens to look numeric but isn't a valid date the
+            // capture will fail validation in GetDateMatchScore (try/catch
+            // around new DateTime(...)).
+            var euroDateMatch = Regex.Match(title, @"\b(\d{2})[.\-](\d{2})[.\-](20[2-9]\d)\b");
+            if (euroDateMatch.Success
+                && int.TryParse(euroDateMatch.Groups[1].Value, out var euroDay)
+                && int.TryParse(euroDateMatch.Groups[2].Value, out var euroMonth)
+                && euroDay is >= 1 and <= 31
+                && euroMonth is >= 1 and <= 12)
+            {
+                parsed.Year = int.Parse(euroDateMatch.Groups[3].Value);
+                parsed.Month = euroMonth;
+                parsed.Day = euroDay;
+            }
         }
 
         // Detect sport prefix
