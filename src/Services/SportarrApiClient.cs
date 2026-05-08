@@ -127,16 +127,24 @@ public class SportarrApiClient
     }
 
     /// <summary>
-    /// Populate Event.BroadcastDate from the API's dateEvent
-    /// (venue-local date) on every event that hasn't already had
-    /// it set. The metadata API delivers the venue-local date as
-    /// dateEvent and the UTC instant as strTimestamp; without this
-    /// fallback, events synced via lookup/search/team-schedule/
-    /// livescore endpoints get BroadcastDate=null and downstream
-    /// query builders fall back to UTC, which produces the wrong
-    /// month/day for late-Eastern games whose UTC instant rolls
-    /// over to the next day. EventQueryService and ReleaseMatchScorer
-    /// both treat BroadcastDate as authoritative.
+    /// Ensure Event.BroadcastDate is populated. The Sportarr API
+    /// (sportarr-api / sportarr-hub) computes broadcastDate from
+    /// each league's IANA broadcast timezone and exposes it on every
+    /// event-bearing response — that's the authoritative source and
+    /// JSON binding fills BroadcastDate directly via JsonPropertyName.
+    ///
+    /// This fallback only kicks in for two cases:
+    ///   1. The API responded with a stale-cached payload predating
+    ///      the broadcastDate rollout (no field on the event).
+    ///   2. Older code paths or tests that synthesize events without
+    ///      hitting the live API.
+    ///
+    /// In both cases we degrade to the UTC date (via dateEvent or
+    /// EventDate.Date). That date drifts a day for late-Eastern games
+    /// whose UTC instant rolls over before broadcast ends — known
+    /// limitation, matches the pre-broadcastDate behavior, gets
+    /// corrected on the next live fetch. Filename services treat
+    /// BroadcastDate as authoritative.
     /// </summary>
     private static void ApplyBroadcastDateFallback(IEnumerable<Event>? events)
     {

@@ -613,18 +613,22 @@ public class LibraryImportService
                 }
             }
 
+            // Filename tokens use BroadcastDate (broadcaster-branded);
+            // see FileRenameService for the rationale.
+            var brandingDate = eventInfo.BroadcastDate ?? eventInfo.EventDate.Date;
+
             var tokens = new FileNamingTokens
             {
                 EventTitle = eventInfo.Title,
                 EventTitleThe = eventInfo.Title,
-                AirDate = eventInfo.EventDate,
+                AirDate = brandingDate,
                 Quality = parsed.Quality ?? "Unknown",
                 QualityFull = _fileParser.BuildQualityString(parsed),
                 ReleaseGroup = parsed.ReleaseGroup ?? string.Empty,
                 OriginalTitle = parsed.EventTitle,
                 OriginalFilename = Path.GetFileNameWithoutExtension(sourcePath),
                 Series = eventInfo.League?.Name ?? eventInfo.Sport,
-                Season = eventInfo.SeasonNumber?.ToString("0000") ?? eventInfo.Season ?? DateTime.UtcNow.Year.ToString(),
+                Season = eventInfo.SeasonNumber?.ToString("0000") ?? eventInfo.Season ?? brandingDate.Year.ToString(),
                 Episode = episodeNumber.ToString("00"),
                 Part = partSuffix
             };
@@ -1334,18 +1338,19 @@ public class LibraryImportService
         {
             // Use the actual file format with all tokens including episode number
             var episodeNumber = matchedEvent.EpisodeNumber ?? 1;
+            var brandingDate = matchedEvent.BroadcastDate ?? matchedEvent.EventDate.Date;
             var tokens = new FileNamingTokens
             {
                 EventTitle = matchedEvent.Title,
                 EventTitleThe = matchedEvent.Title,
-                AirDate = matchedEvent.EventDate,
+                AirDate = brandingDate,
                 Quality = "WEBDL-1080p", // Preview placeholder
                 QualityFull = "WEBDL-1080p",
                 ReleaseGroup = string.Empty,
                 OriginalTitle = matchedEvent.Title,
                 OriginalFilename = Path.GetFileNameWithoutExtension(originalFileName),
                 Series = matchedEvent.League?.Name ?? matchedEvent.Sport ?? "Unknown",
-                Season = matchedEvent.SeasonNumber?.ToString("0000") ?? matchedEvent.Season ?? matchedEvent.EventDate.Year.ToString(),
+                Season = matchedEvent.SeasonNumber?.ToString("0000") ?? matchedEvent.Season ?? brandingDate.Year.ToString(),
                 Episode = episodeNumber.ToString("00"),
                 Part = string.Empty
             };

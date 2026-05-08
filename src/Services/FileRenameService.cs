@@ -427,11 +427,17 @@ public class FileRenameService
             partSuffix = $" - pt{file.PartNumber}";
         }
 
+        // BroadcastDate is the broadcaster-branding date (e.g. "Monday's
+        // Raw" stays 2026-05-04 even though the UTC instant rolls into
+        // 2026-05-05). Use it for filename tokens; EventDate (UTC) is
+        // only the fallback when the upstream API hasn't supplied one.
+        var brandingDate = evt.BroadcastDate ?? evt.EventDate.Date;
+
         return new FileNamingTokens
         {
             EventTitle = evt.Title,
             Series = evt.League?.Name ?? evt.Sport ?? "Unknown",
-            Season = evt.SeasonNumber?.ToString() ?? evt.Season ?? evt.EventDate.Year.ToString(),
+            Season = evt.SeasonNumber?.ToString() ?? evt.Season ?? brandingDate.Year.ToString(),
             Episode = evt.EpisodeNumber?.ToString() ?? "01",
             Part = partSuffix,
             Quality = file.Quality ?? "Unknown",
@@ -439,7 +445,7 @@ public class FileRenameService
             ReleaseGroup = file.ReleaseGroup ?? ExtractReleaseGroupFromTitle(file.OriginalTitle),
             OriginalTitle = file.OriginalTitle ?? evt.Title,
             OriginalFilename = Path.GetFileNameWithoutExtension(file.FilePath),
-            AirDate = evt.EventDate
+            AirDate = brandingDate
         };
     }
 

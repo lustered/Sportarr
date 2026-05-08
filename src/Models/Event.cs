@@ -192,15 +192,34 @@ public class Event
     public DateTime DateEventFallback { get; set; }
 
     /// <summary>
-    /// Broadcast-local date (no time component) as published by the source API.
-    /// CRITICAL for query building: indexer releases name shows by their local
-    /// broadcast date, not by UTC. AEW Dynamite "Dec 31, 2025 8pm Eastern" is
-    /// EventDate=2026-01-01T01:00Z but BroadcastDate=2025-12-31, so queries
-    /// must use BroadcastDate to find "AEW.2025.12.31.*" releases.
-    /// Null for events synced before this field was added; falls back to
-    /// EventDate.Date (UTC-based, the old behavior).
+    /// Broadcast-local date (no time component) as published by the
+    /// upstream API. The API resolves this from the league's IANA
+    /// broadcast timezone, so AEW Dynamite "Dec 31, 2025 8pm Eastern"
+    /// arrives as BroadcastDate=2025-12-31 even though
+    /// EventDate=2026-01-01T01:00Z. CRITICAL for filenames, indexer
+    /// queries, and Plex originallyAvailableAt: scene release groups
+    /// and broadcasters all key off this date, not UTC.
+    /// API binding: prefers the new "broadcastDate" field (TZ-anchored)
+    /// the upstream service computes per league. ApplyBroadcastDateFallback
+    /// fills it from EventDate.Date (UTC) when the upstream response
+    /// is older / pre-rollout — this fallback drifts a day for
+    /// late-Eastern events but matches the previous behavior.
     /// </summary>
+    [JsonPropertyName("broadcastDate")]
+    [JsonConverter(typeof(NullableEventDateConverter))]
     public DateTime? BroadcastDate { get; set; }
+
+    /// <summary>
+    /// IANA broadcast timezone (e.g. "America/New_York") resolved by
+    /// the upstream API from the league name. Used for UI display
+    /// ("airs 8pm America/New_York") and to render scheduled times in
+    /// the broadcaster's local clock. Null for events whose league
+    /// has no known TZ mapping; UI should fall back to UTC display.
+    /// Not persisted — purely transient on API responses.
+    /// </summary>
+    [JsonPropertyName("broadcastTimezone")]
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped]
+    public string? BroadcastTimezone { get; set; }
 
     [JsonPropertyName("strVenue")]
     public string? Venue { get; set; }
@@ -423,6 +442,20 @@ public class EventResponse
     public int? EpisodeNumber { get; set; }
     public string? Round { get; set; }
     public DateTime EventDate { get; set; }
+    /// <summary>
+    /// Broadcast-local date the event is branded by (e.g. "Monday Night
+    /// Raw 2026-05-04" stays Monday even though the UTC instant rolls
+    /// into Tuesday). Use this for filename-style display and "what date
+    /// is this on the broadcaster's calendar" UI; EventDate stays as the
+    /// canonical UTC instant for ordering and live status.
+    /// </summary>
+    public DateTime? BroadcastDate { get; set; }
+    /// <summary>
+    /// IANA broadcast timezone (e.g. "America/New_York"). UI may use it
+    /// to localize EventDate for display. Null when the upstream API
+    /// has no league mapping.
+    /// </summary>
+    public string? BroadcastTimezone { get; set; }
     public string? Venue { get; set; }
     public string? Location { get; set; }
     public string? Broadcast { get; set; }
@@ -478,6 +511,8 @@ public class EventResponse
             EpisodeNumber = evt.EpisodeNumber,
             Round = evt.Round,
             EventDate = evt.EventDate,
+            BroadcastDate = evt.BroadcastDate,
+            BroadcastTimezone = evt.BroadcastTimezone,
             Venue = evt.Venue,
             Location = evt.Location,
             Broadcast = evt.Broadcast,

@@ -843,18 +843,22 @@ public class PackImportService
         string filename;
         if (settings.RenameEvents)
         {
+            // Filename tokens use BroadcastDate (broadcaster-branded);
+            // see FileRenameService for the rationale.
+            var brandingDate = eventInfo.BroadcastDate ?? eventInfo.EventDate.Date;
+
             var tokens = new FileNamingTokens
             {
                 EventTitle = eventInfo.Title,
                 EventTitleThe = eventInfo.Title,
-                AirDate = eventInfo.EventDate,
+                AirDate = brandingDate,
                 Quality = parsed.Quality ?? "Unknown",
                 QualityFull = _parser.BuildQualityString(parsed),
                 ReleaseGroup = parsed.ReleaseGroup ?? string.Empty,
                 OriginalTitle = parsed.EventTitle,
                 OriginalFilename = Path.GetFileNameWithoutExtension(parsed.EventTitle),
                 Series = eventInfo.League?.Name ?? eventInfo.Sport,
-                Season = eventInfo.SeasonNumber?.ToString("0000") ?? eventInfo.Season ?? DateTime.UtcNow.Year.ToString(),
+                Season = eventInfo.SeasonNumber?.ToString("0000") ?? eventInfo.Season ?? brandingDate.Year.ToString(),
                 Episode = episodeNumber.ToString("00"),
                 Part = string.Empty
             };

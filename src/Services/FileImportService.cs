@@ -823,11 +823,16 @@ public class FileImportService : IFileImportService
             var effectiveQuality = downloadQuality ?? parsed.Quality ?? "Unknown";
             var effectiveQualityFull = !string.IsNullOrEmpty(downloadQuality) ? downloadQuality : _parser.BuildQualityString(parsed);
 
+            // Filename date tokens use the broadcaster's branding date
+            // (BroadcastDate), not the UTC instant — see FileRenameService
+            // for the rationale.
+            var brandingDate = eventInfo.BroadcastDate ?? eventInfo.EventDate.Date;
+
             var tokens = new FileNamingTokens
             {
                 EventTitle = eventInfo.Title ?? string.Empty,
                 EventTitleThe = eventInfo.Title ?? string.Empty,
-                AirDate = eventInfo.EventDate,
+                AirDate = brandingDate,
                 Quality = effectiveQuality,
                 QualityFull = effectiveQualityFull,
                 ReleaseGroup = parsed.ReleaseGroup ?? string.Empty,
@@ -835,7 +840,7 @@ public class FileImportService : IFileImportService
                 OriginalFilename = Path.GetFileNameWithoutExtension(parsed.EventTitle),
                 // Plex TV show structure
                 Series = eventInfo.League?.Name ?? eventInfo.Sport ?? string.Empty,
-                Season = eventInfo.SeasonNumber?.ToString("0000") ?? eventInfo.Season ?? DateTime.UtcNow.Year.ToString(),
+                Season = eventInfo.SeasonNumber?.ToString("0000") ?? eventInfo.Season ?? brandingDate.Year.ToString(),
                 Episode = episodeNumber.ToString("00"),
                 Part = partSuffix
             };

@@ -567,18 +567,22 @@ public class DvrRecordingService
                     ? $" - {recording.PartName}"
                     : "";
 
+                // Use the broadcaster-branding date for filename tokens —
+                // see FileRenameService for the UTC-rollover rationale.
+                var brandingDate = eventInfo.BroadcastDate ?? eventInfo.EventDate.Date;
+
                 var tokens = new FileNamingTokens
                 {
                     EventTitle = eventInfo.Title,
                     EventTitleThe = eventInfo.Title,
-                    AirDate = eventInfo.EventDate,
+                    AirDate = brandingDate,
                     Quality = recording.Quality ?? "HDTV-1080p",
                     QualityFull = $"{recording.Quality ?? "HDTV-1080p"}.DVR",
                     ReleaseGroup = "DVR",
                     OriginalTitle = recording.Title,
                     OriginalFilename = recording.Title,
                     Series = eventInfo.League?.Name ?? eventInfo.Sport,
-                    Season = eventInfo.SeasonNumber?.ToString("0000") ?? eventInfo.Season ?? DateTime.UtcNow.Year.ToString(),
+                    Season = eventInfo.SeasonNumber?.ToString("0000") ?? eventInfo.Season ?? brandingDate.Year.ToString(),
                     Episode = episodeNumber.ToString("00"),
                     Part = partSuffix
                 };
