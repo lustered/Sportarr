@@ -299,6 +299,16 @@ public class RssSyncService : BackgroundService
         Event? bestMatch = null;
         int bestConfidence = int.MinValue;
 
+        // Parse the release title ONCE outside the per-event loop. Without
+        // this, ValidateRelease re-runs the sports-pattern regex chain
+        // against the same string for every monitored event we test,
+        // which becomes O(events × releases) regex work per RSS poll
+        // and floods the log sink (see SportsFileNameParser memoization
+        // for the related symptom). The cached result is read-only at
+        // ValidateRelease's use sites so sharing it across iterations is
+        // safe.
+        var preParsed = matchingService.ParseRelease(release.Title);
+
         foreach (var evt in monitoredEvents)
         {
             // Quick pre-filter: skip events whose title shares no keywords with the release.
@@ -306,7 +316,7 @@ public class RssSyncService : BackgroundService
             if (!eventKeywords.Any(kw => releaseTitle.Contains(kw)))
                 continue;
 
-            var matchResult = matchingService.ValidateRelease(release, evt, null, enableMultiPartEpisodes);
+            var matchResult = matchingService.ValidateRelease(release, evt, null, enableMultiPartEpisodes, preParsed);
             if (!matchResult.IsMatch || matchResult.IsHardRejection)
                 continue;
 

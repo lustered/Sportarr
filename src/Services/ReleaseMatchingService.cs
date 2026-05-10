@@ -97,7 +97,25 @@ public class ReleaseMatchingService
     /// <param name="evt">The event to match against</param>
     /// <param name="requestedPart">Optional specific part requested (e.g., "Main Card", "Prelims")</param>
     /// <param name="enableMultiPartEpisodes">Whether multi-part episodes are enabled. When false, rejects releases with detected parts (Main Card, Prelims, etc.)</param>
-    public ReleaseMatchResult ValidateRelease(ReleaseSearchResult release, Event evt, string? requestedPart = null, bool enableMultiPartEpisodes = true)
+    /// <param name="preParsed">Optional pre-parsed result for the release. Callers that match a single release against many events
+    /// (RssSync.FindMatchingEvent and similar) should parse once outside the per-event loop and pass the result here so this method
+    /// doesn't re-run the sports-pattern regex chain on every iteration. When null, this method parses internally — preserves the
+    /// behavior of one-off callers that aren't in a hot loop.</param>
+    /// <summary>
+    /// Parse a release title via the underlying sports filename parser.
+    /// Exposed so callers that match a single release against many
+    /// events (e.g. RssSync.FindMatchingEvent) can parse once outside
+    /// the per-event loop and pass the result into ValidateRelease.
+    /// </summary>
+    public SportsParseResult ParseRelease(string releaseTitle)
+        => _sportsParser.Parse(releaseTitle);
+
+    public ReleaseMatchResult ValidateRelease(
+        ReleaseSearchResult release,
+        Event evt,
+        string? requestedPart = null,
+        bool enableMultiPartEpisodes = true,
+        SportsParseResult? preParsed = null)
     {
         var result = new ReleaseMatchResult
         {
@@ -143,8 +161,10 @@ public class ReleaseMatchingService
             }
         }
 
-        // Parse the release title using sports-specific parser
-        var parseResult = _sportsParser.Parse(release.Title);
+        // Parse the release title using sports-specific parser. Hot-loop
+        // callers pass a pre-parsed result via preParsed so the same
+        // release title isn't re-parsed once per monitored event.
+        var parseResult = preParsed ?? _sportsParser.Parse(release.Title);
 
         // Normalize titles for comparison (includes diacritic removal)
         var normalizedRelease = NormalizeTitle(release.Title);
