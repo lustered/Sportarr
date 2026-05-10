@@ -549,7 +549,7 @@ export default function LeagueSearchPage() {
             return (
               <tr
                 key={league.idLeague}
-                onClick={() => { if (!isAdded) handleCardClick(league, isAdded, addedLeagueInfo); }}
+                onClick={() => handleCardClick(league, isAdded, addedLeagueInfo)}
                 className={`${TABLE_ROW_HOVER} cursor-pointer ${isAdded ? 'bg-green-900/10' : ''}`}
               >
                 <td className="px-3 py-3">
