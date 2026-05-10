@@ -78,6 +78,20 @@ public class League
     public string? Country { get; set; }
 
     /// <summary>
+    /// Comma-separated alternate names for this league as published by
+    /// the upstream API (e.g. "English Prem Rugby" has the alternate
+    /// "Gallagher Premiership Rugby" — the sponsor-branded name scene
+    /// release groups actually use). The release matcher splits on
+    /// commas and accepts any of the alternates as a valid league
+    /// reference, so a release titled "Gallagher Premiership..." gets
+    /// matched against the canonical league.
+    /// Sourced from TheSportsDB strLeagueAlternate via sportarr-api;
+    /// admins can set additional aliases via the metadata service UI.
+    /// </summary>
+    [JsonPropertyName("strLeagueAlternate")]
+    public string? AlternateName { get; set; }
+
+    /// <summary>
     /// League description
     /// </summary>
     [JsonPropertyName("strDescriptionEN")]

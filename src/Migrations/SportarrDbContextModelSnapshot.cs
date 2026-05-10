@@ -2019,6 +2019,10 @@ namespace Sportarr.Api.Migrations
                     b.Property<DateTime>("Added")
                         .HasColumnType("TEXT");
 
+                    b.Property<string>("AlternateName")
+                        .HasColumnType("TEXT")
+                        .HasAnnotation("Relational:JsonPropertyName", "strLeagueAlternate");
+
                     b.Property<string>("BannerUrl")
                         .HasMaxLength(500)
                         .HasColumnType("TEXT")
