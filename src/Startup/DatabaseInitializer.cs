@@ -1328,6 +1328,52 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify Tags columns: {ex.Message}");
         }
 
+        // Backfill: rewrite legacy www.thesportsdb.com image URLs to the
+        // r2.thesportsdb.com mirror. The legacy host returns 404 for
+        // image requests after TheSportsDB's CDN migration; existing
+        // rows that were written before ImageUrlNormalizer was wired
+        // into the model setters keep the dead URL until something
+        // resaves them. One-time UPDATE per startup, idempotent
+        // (rows already on r2 don't match the LIKE filter), safe to
+        // re-run.
+        try
+        {
+            var imageUrlBackfills = new[]
+            {
+                ("Leagues",      new[] { "LogoUrl", "BannerUrl", "PosterUrl" }),
+                ("Teams",        new[] { "BadgeUrl", "JerseyUrl", "BannerUrl" }),
+                ("Events",       new[] { "PosterUrl", "ThumbUrl", "BannerUrl", "FanartUrl" }),
+            };
+            int totalRowsRewritten = 0;
+            foreach (var (table, columns) in imageUrlBackfills)
+            {
+                foreach (var col in columns)
+                {
+                    // Skip silently when the column doesn't exist on a
+                    // legacy DB — Tags / etc. follow the same pattern.
+                    var colExistsSql = $"SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name='{col}'";
+                    var colExists = db.Database.SqlQueryRaw<int>(colExistsSql).AsEnumerable().FirstOrDefault();
+                    if (colExists == 0) continue;
+
+                    var sql = $"UPDATE \"{table}\" SET \"{col}\" = REPLACE(\"{col}\", 'www.thesportsdb.com/images/', 'r2.thesportsdb.com/images/') WHERE \"{col}\" LIKE '%www.thesportsdb.com/images/%'";
+                    var rows = db.Database.ExecuteSqlRaw(sql);
+                    if (rows > 0)
+                    {
+                        Console.WriteLine($"[Sportarr] Backfilled {rows} {table}.{col} URLs to r2.thesportsdb.com mirror");
+                        totalRowsRewritten += rows;
+                    }
+                }
+            }
+            if (totalRowsRewritten > 0)
+            {
+                Console.WriteLine($"[Sportarr] Image-URL backfill complete: {totalRowsRewritten} rows updated total");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not backfill legacy image URLs: {ex.Message}");
+        }
+
         // Clean up orphaned events (events whose leagues no longer exist)
         try
         {

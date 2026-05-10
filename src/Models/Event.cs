@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Sportarr.Api.Converters;
+using Sportarr.Api.Helpers;
 using Sportarr.Api.Services;
 
 namespace Sportarr.Api.Models;
@@ -252,26 +253,50 @@ public class Event
     /// <summary>
     /// Event poster image URL from Sportarr API API (not stored in DB, used during deserialization)
     /// </summary>
+    // Image URLs go through ImageUrlNormalizer so legacy
+    // www.thesportsdb.com URLs get rewritten to r2.thesportsdb.com
+    // on assignment. See League.LogoUrl for the rationale.
+
     [JsonPropertyName("strPoster")]
-    public string? PosterUrl { get; set; }
+    public string? PosterUrl
+    {
+        get => _posterUrl;
+        set => _posterUrl = ImageUrlNormalizer.Normalize(value);
+    }
+    private string? _posterUrl;
 
     /// <summary>
     /// Event thumbnail image URL from Sportarr API API (not stored in DB, used during deserialization)
     /// </summary>
     [JsonPropertyName("strThumb")]
-    public string? ThumbUrl { get; set; }
+    public string? ThumbUrl
+    {
+        get => _thumbUrl;
+        set => _thumbUrl = ImageUrlNormalizer.Normalize(value);
+    }
+    private string? _thumbUrl;
 
     /// <summary>
     /// Event banner image URL from Sportarr API API (not stored in DB, used during deserialization)
     /// </summary>
     [JsonPropertyName("strBanner")]
-    public string? BannerUrl { get; set; }
+    public string? BannerUrl
+    {
+        get => _bannerUrl;
+        set => _bannerUrl = ImageUrlNormalizer.Normalize(value);
+    }
+    private string? _bannerUrl;
 
     /// <summary>
     /// Event fanart image URL from Sportarr API API (not stored in DB, used during deserialization)
     /// </summary>
     [JsonPropertyName("strFanart")]
-    public string? FanartUrl { get; set; }
+    public string? FanartUrl
+    {
+        get => _fanartUrl;
+        set => _fanartUrl = ImageUrlNormalizer.Normalize(value);
+    }
+    private string? _fanartUrl;
 
     public DateTime Added { get; set; } = DateTime.UtcNow;
     public DateTime? LastUpdate { get; set; }

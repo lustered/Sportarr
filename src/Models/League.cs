@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Sportarr.Api.Helpers;
 
 namespace Sportarr.Api.Models;
 
@@ -190,23 +191,47 @@ public class League
     /// </summary>
     public int? DvrPostRollMinutes { get; set; }
 
+    // Image URLs go through ImageUrlNormalizer on set so any legacy
+    // www.thesportsdb.com/images/... URL gets rewritten to the
+    // current r2.thesportsdb.com mirror as it lands. The legacy host
+    // returns 404 for image requests; the upstream API still hands
+    // us old URLs for older entities. Normalizing at the property
+    // setter catches every code path that writes the field — JSON
+    // deserialization, manual assignment, EF Core load — without
+    // having to touch each call site.
+
     /// <summary>
     /// League logo/badge URL
     /// </summary>
     [JsonPropertyName("strBadge")]
-    public string? LogoUrl { get; set; }
+    public string? LogoUrl
+    {
+        get => _logoUrl;
+        set => _logoUrl = ImageUrlNormalizer.Normalize(value);
+    }
+    private string? _logoUrl;
 
     /// <summary>
     /// League banner image URL
     /// </summary>
     [JsonPropertyName("strBanner")]
-    public string? BannerUrl { get; set; }
+    public string? BannerUrl
+    {
+        get => _bannerUrl;
+        set => _bannerUrl = ImageUrlNormalizer.Normalize(value);
+    }
+    private string? _bannerUrl;
 
     /// <summary>
     /// League poster/trophy image URL
     /// </summary>
     [JsonPropertyName("strPoster")]
-    public string? PosterUrl { get; set; }
+    public string? PosterUrl
+    {
+        get => _posterUrl;
+        set => _posterUrl = ImageUrlNormalizer.Normalize(value);
+    }
+    private string? _posterUrl;
 
     /// <summary>
     /// Official league website
