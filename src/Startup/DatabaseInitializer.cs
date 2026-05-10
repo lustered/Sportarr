@@ -91,6 +91,28 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify Leagues.MonitoredParts column: {ex.Message}");
         }
 
+        // Ensure AlternateName column exists in Leagues table (added with
+        // the league-alternate-names matcher fix). For legacy databases
+        // created with EnsureCreated() the migration history was seeded
+        // upfront so EF skips the AddColumn migration; without this
+        // safety net the column never lands and every Leagues SELECT
+        // throws "no such column: AlternateName".
+        try
+        {
+            var checkLeagueAltSql = "SELECT COUNT(*) FROM pragma_table_info('Leagues') WHERE name='AlternateName'";
+            var leagueAltExists = db.Database.SqlQueryRaw<int>(checkLeagueAltSql).AsEnumerable().FirstOrDefault();
+            if (leagueAltExists == 0)
+            {
+                Console.WriteLine("[Sportarr] Leagues.AlternateName column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE Leagues ADD COLUMN AlternateName TEXT");
+                Console.WriteLine("[Sportarr] Leagues.AlternateName column added successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not verify Leagues.AlternateName column: {ex.Message}");
+        }
+
         // Ensure MonitoredParts column exists in Events table (backwards compatibility fix)
         try
         {
