@@ -408,36 +408,24 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify FailDownloads columns: {ex.Message}");
         }
 
-        // Drop the legacy persisted live-state columns from RootFolders.
-        // These were previously persisted (Accessible / FreeSpace / TotalSpace
-        // / LastChecked) but Phase 3 of the root-folders rework moved them to
-        // [NotMapped] live-only fields. The drop migration handles fresh
-        // installs; this safety net handles legacy databases that were
-        // originally created with EnsureCreated() — the migration-history
-        // seeder marks every migration as applied without actually running
-        // the DropColumn, so the NOT NULL columns survive and INSERTs from
-        // the [NotMapped] model fail with a constraint violation. SQLite
-        // 3.35+ supports ALTER TABLE DROP COLUMN; we wrap each call in its
-        // own try/catch so an older sqlite or an already-dropped column
-        // never aborts startup.
-        foreach (var legacyCol in new[] { "Accessible", "FreeSpace", "TotalSpace", "LastChecked" })
-        {
-            try
-            {
-                var checkSql = $"SELECT COUNT(*) FROM pragma_table_info('RootFolders') WHERE name='{legacyCol}'";
-                var exists = db.Database.SqlQueryRaw<int>(checkSql).AsEnumerable().FirstOrDefault();
-                if (exists > 0)
-                {
-                    Console.WriteLine($"[Sportarr] Legacy RootFolders.{legacyCol} column found - dropping it now...");
-                    db.Database.ExecuteSqlRaw($"ALTER TABLE RootFolders DROP COLUMN {legacyCol}");
-                    Console.WriteLine($"[Sportarr] RootFolders.{legacyCol} column dropped successfully");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Sportarr] Warning: Could not drop RootFolders.{legacyCol}: {ex.Message}");
-            }
-        }
+        // The legacy persisted live-state columns on RootFolders
+        // (Accessible / FreeSpace / TotalSpace / LastChecked) are now
+        // [NotMapped] live-only fields. The drop is owned by the
+        // DropPersistedRootFolderState migration alone — it runs once on the
+        // upgrade boot that introduces it. A previous safety-net here also
+        // dropped the columns on every subsequent boot if it found them, but
+        // that turned out to cause more harm than good: when a user landed
+        // briefly on an older binary (Docker tag cache, partial Windows
+        // installer rollover, etc.), the safety net had already dropped the
+        // column on a prior boot, and the older binary's EF model still
+        // mapped Accessible to a real column — every GET /api/rootfolder
+        // crashed with "no such column: r.Accessible".
+        //
+        // Letting legacy columns sit in the schema costs nothing — the model
+        // has [NotMapped] so EF ignores them on read/write — and means a
+        // stale binary that still references them keeps working. Sonarr
+        // takes the same approach: dropping is a one-shot migration, never
+        // a recurring startup chore.
 
         // Ensure RootFolders has the per-root default columns. Added so a
         // user can pin a Quality Profile and a Download Client category to
