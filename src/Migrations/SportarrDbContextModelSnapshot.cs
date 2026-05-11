@@ -2061,6 +2061,9 @@ namespace Sportarr.Api.Migrations
                         .HasColumnType("TEXT")
                         .HasAnnotation("Relational:JsonPropertyName", "strBadge");
 
+                    b.Property<DateTime?>("MetadataLastSyncedAt")
+                        .HasColumnType("TEXT");
+
                     b.Property<int>("MonitorType")
                         .HasColumnType("INTEGER");
 

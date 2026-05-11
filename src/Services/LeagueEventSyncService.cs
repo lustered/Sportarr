@@ -70,6 +70,18 @@ public class LeagueEventSyncService
             return result;
         }
 
+        // Opportunistic league-metadata refresh. The 24h LeagueEventAutoSync
+        // cycle previously only touched events, never the league row
+        // itself, so fields like AlternateName / LogoUrl / Description
+        // that were added or corrected upstream never propagated to
+        // existing leagues — admins had to delete + re-add a league to
+        // pick up new metadata. This call piggy-backs on every event
+        // sync; the freshness gate keeps it from hammering upstream by
+        // bypassing the lookup when the league was refreshed within the
+        // TTL window. force-refresh callers (the blue refresh button)
+        // skip the gate entirely so a manual refresh always re-pulls.
+        await RefreshLeagueMetadataIfStaleAsync(league, forceRefresh);
+
         // Determine current season for MonitorType filtering
         var currentSeason = DateTime.UtcNow.Year.ToString();
 
@@ -382,6 +394,89 @@ public class LeagueEventSyncService
         _logger.LogInformation("[League Event Sync] Completed: {Message}", result.Message);
 
         return result;
+    }
+
+    /// <summary>
+    /// How long a league's metadata stays fresh before the auto-sync
+    /// loop is allowed to re-pull it from upstream. League-level fields
+    /// (alternate names, logos, description, website, formed year)
+    /// change very rarely, so a once-a-week refresh is plenty and keeps
+    /// the upstream API key budget healthy across hundreds of monitored
+    /// leagues. force-refresh callers (the blue UI button + initial add)
+    /// bypass this gate entirely.
+    /// </summary>
+    private static readonly TimeSpan _leagueMetadataTtl = TimeSpan.FromDays(7);
+
+    /// <summary>
+    /// Refresh a league's metadata fields from upstream when the cached
+    /// snapshot is older than the TTL (or has never been refreshed).
+    /// Mutates the entity in place and saves. Failure to refresh is
+    /// logged at Warning but never breaks event sync — the caller
+    /// continues with whatever metadata it already has.
+    /// </summary>
+    private async Task RefreshLeagueMetadataIfStaleAsync(League league, bool forceRefresh)
+    {
+        if (string.IsNullOrEmpty(league.ExternalId)) return;
+
+        var lastSync = league.MetadataLastSyncedAt;
+        var isStale = lastSync == null || (DateTime.UtcNow - lastSync.Value) >= _leagueMetadataTtl;
+        if (!forceRefresh && !isStale)
+        {
+            _logger.LogDebug(
+                "[League Event Sync] Skipping metadata refresh for {LeagueName}: last sync {Hours}h ago, TTL {TtlHours}h",
+                league.Name,
+                lastSync.HasValue ? (DateTime.UtcNow - lastSync.Value).TotalHours : 0,
+                _leagueMetadataTtl.TotalHours);
+            return;
+        }
+
+        try
+        {
+            _logger.LogInformation(
+                "[League Event Sync] Refreshing metadata from upstream for {LeagueName} (lastSync: {LastSync}, forceRefresh: {Force})",
+                league.Name, lastSync?.ToString("u") ?? "never", forceRefresh);
+
+            var fullDetails = await _sportarrApiClient.LookupLeagueAsync(league.ExternalId);
+            if (fullDetails == null)
+            {
+                _logger.LogWarning(
+                    "[League Event Sync] Upstream lookup returned null for {LeagueName} (id: {ExternalId})",
+                    league.Name, league.ExternalId);
+                return;
+            }
+
+            // Copy fields that come from upstream — never overwrite with
+            // empty / null. AlternateName / LogoUrl / etc. land here
+            // when upstream surfaces a value the existing row was
+            // missing (the most common case for legacy leagues added
+            // before the new bindings landed).
+            if (!string.IsNullOrEmpty(fullDetails.AlternateName)) league.AlternateName = fullDetails.AlternateName;
+            if (!string.IsNullOrEmpty(fullDetails.LogoUrl))       league.LogoUrl = fullDetails.LogoUrl;
+            if (!string.IsNullOrEmpty(fullDetails.BannerUrl))     league.BannerUrl = fullDetails.BannerUrl;
+            if (!string.IsNullOrEmpty(fullDetails.PosterUrl))     league.PosterUrl = fullDetails.PosterUrl;
+            if (!string.IsNullOrEmpty(fullDetails.Description))   league.Description = fullDetails.Description;
+            if (!string.IsNullOrEmpty(fullDetails.Website))       league.Website = fullDetails.Website;
+            if (!string.IsNullOrEmpty(fullDetails.FormedYear))    league.FormedYear = fullDetails.FormedYear;
+            if (!string.IsNullOrEmpty(fullDetails.Country))       league.Country = fullDetails.Country;
+
+            league.MetadataLastSyncedAt = DateTime.UtcNow;
+            await _db.SaveChangesAsync();
+
+            _logger.LogInformation(
+                "[League Event Sync] Metadata refreshed for {LeagueName} - AlternateName: {HasAlt}, Logo: {HasLogo}",
+                league.Name,
+                !string.IsNullOrEmpty(league.AlternateName),
+                !string.IsNullOrEmpty(league.LogoUrl));
+        }
+        catch (Exception ex)
+        {
+            // Never let metadata refresh take down the event sync. Log
+            // and continue — the event-sync path is the more important
+            // half of this loop.
+            _logger.LogWarning(ex,
+                "[League Event Sync] Metadata refresh failed for {LeagueName}: {Message}",
+                league.Name, ex.Message);
+        }
     }
 
     /// <summary>

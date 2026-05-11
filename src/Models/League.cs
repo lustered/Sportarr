@@ -93,6 +93,18 @@ public class League
     public string? AlternateName { get; set; }
 
     /// <summary>
+    /// When the league's upstream metadata (AlternateName, LogoUrl,
+    /// Description, etc.) was last refreshed from the Sportarr API.
+    /// LeagueEventAutoSyncService re-pulls the league once a week
+    /// (TTL configured in LeagueEventSyncService) so legacy leagues
+    /// added before a new binding existed eventually pick it up
+    /// without an admin re-add. Null = never refreshed; gets set on
+    /// first successful upstream lookup. Not bound to any upstream
+    /// field — internal bookkeeping only.
+    /// </summary>
+    public DateTime? MetadataLastSyncedAt { get; set; }
+
+    /// <summary>
     /// League description
     /// </summary>
     [JsonPropertyName("strDescriptionEN")]

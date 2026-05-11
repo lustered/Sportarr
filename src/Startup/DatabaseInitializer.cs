@@ -113,6 +113,27 @@ public static class DatabaseInitializer
             Console.WriteLine($"[Sportarr] Warning: Could not verify Leagues.AlternateName column: {ex.Message}");
         }
 
+        // Ensure MetadataLastSyncedAt column exists in Leagues table.
+        // The auto-sync pipeline reads this to decide whether to
+        // re-pull league metadata from upstream; without the column
+        // every event sync would throw "no such column" on legacy DBs
+        // and event sync would be broken entirely.
+        try
+        {
+            var checkLeagueMetaSyncSql = "SELECT COUNT(*) FROM pragma_table_info('Leagues') WHERE name='MetadataLastSyncedAt'";
+            var leagueMetaSyncExists = db.Database.SqlQueryRaw<int>(checkLeagueMetaSyncSql).AsEnumerable().FirstOrDefault();
+            if (leagueMetaSyncExists == 0)
+            {
+                Console.WriteLine("[Sportarr] Leagues.MetadataLastSyncedAt column missing - adding it now...");
+                db.Database.ExecuteSqlRaw("ALTER TABLE Leagues ADD COLUMN MetadataLastSyncedAt TEXT");
+                Console.WriteLine("[Sportarr] Leagues.MetadataLastSyncedAt column added successfully");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Sportarr] Warning: Could not verify Leagues.MetadataLastSyncedAt column: {ex.Message}");
+        }
+
         // Ensure MonitoredParts column exists in Events table (backwards compatibility fix)
         try
         {
