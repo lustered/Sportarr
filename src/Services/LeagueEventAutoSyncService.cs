@@ -86,10 +86,20 @@ public class LeagueEventAutoSyncService : BackgroundService
                 _logger.LogInformation("[Auto-Sync] Syncing events for league: {LeagueName} ({Sport})",
                     league.Name, league.Sport);
 
-                // Use fullHistoricalSync=true to ensure ALL seasons are synced
-                // This catches new seasons (e.g., after Jan 1) and any events that were
-                // added to historical seasons. The API caches results so this is efficient.
-                var result = await syncService.SyncLeagueEventsAsync(league.Id, seasons: null, fullHistoricalSync: true);
+                // fullHistoricalSync=false on the scheduled path. Historical
+                // seasons are populated when the league is first added (the
+                // POST /api/leagues handler runs a one-time full sync) and
+                // don't change afterward, so walking them again on every
+                // scheduled cycle is wasted upstream traffic against
+                // sportarr-api / thesportsdb. The optimized branch in
+                // LeagueEventSyncService restricts the walk to current and
+                // future seasons, which is what this background pass needs --
+                // catching newly added games in the active season and any
+                // newly added upcoming seasons. New seasons that start
+                // mid-year are picked up because LeagueEventSync also
+                // unions in the next 5 calendar years on top of whatever
+                // the optimized filter returns.
+                var result = await syncService.SyncLeagueEventsAsync(league.Id, seasons: null, fullHistoricalSync: false);
 
                 if (result.Success)
                 {

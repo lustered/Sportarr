@@ -1748,9 +1748,18 @@ app.MapPost("/api/leagues/{id:int}/refresh-events", async (
 
         // User-initiated refresh: ask sportarr-api to bypass its own cache via
         // Cache-Control: no-cache so we get the latest schedule from TheSportsDB
-        // in this request. fullHistoricalSync stays true so newly added seasons
-        // upstream are picked up immediately.
-        var result = await syncService.SyncLeagueEventsAsync(id, seasons, fullHistoricalSync: true, forceRefresh: true);
+        // in this request. fullHistoricalSync stays false because the refresh
+        // button is meant for "pick up new games in the current season", not
+        // "re-fetch all 72 seasons of NBA from 1947 onward". Historical seasons
+        // are immutable and were populated when the league was first added;
+        // walking them on every refresh click was sending ~95% wasted traffic
+        // to sportarr-api / thesportsdb (each click was iterating dozens of
+        // seasons sequentially with forceRefresh=true, which at thesportsdb's
+        // 5-30s response times during heavy periods saturated the upstream
+        // semaphore for everyone). The optimized branch in LeagueEventSync
+        // limits the walk to current + future seasons, which is what users
+        // actually want from the refresh button.
+        var result = await syncService.SyncLeagueEventsAsync(id, seasons, fullHistoricalSync: false, forceRefresh: true);
 
         if (!result.Success)
         {
