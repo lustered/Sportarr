@@ -1,4 +1,5 @@
 using Sportarr.Api.Data;
+using Sportarr.Api.Helpers;
 using Sportarr.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -164,14 +165,19 @@ public class LeagueEventSyncService
                         seasons.Count, skippedCount, string.Join(", ", seasons));
                 }
 
-                // Add future years to catch upcoming events (current year + 5 years)
+                // Add future seasons to catch upcoming events even when
+                // /list/seasons hasn't picked them up upstream yet (current
+                // year + 5 years). Format-aware so two-year-span leagues
+                // like NBA / NHL ("2025-2026") get future strings in the
+                // same format instead of bare 4-digit years -- the old
+                // blind year-adding loop produced six guaranteed-404
+                // round trips per sync per two-year-span league.
                 var currentYear = DateTime.UtcNow.Year;
-                for (int year = currentYear; year <= currentYear + 5; year++)
+                foreach (var future in SeasonStringFormatter.GenerateFutureSeasons(seasons, currentYear, 5))
                 {
-                    var yearStr = year.ToString();
-                    if (!seasons.Contains(yearStr))
+                    if (!seasons.Contains(future))
                     {
-                        seasons.Add(yearStr);
+                        seasons.Add(future);
                     }
                 }
             }
