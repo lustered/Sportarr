@@ -149,15 +149,37 @@ public static class ServiceCollectionExtensions
                 client.Timeout = TimeSpan.FromSeconds(30);
                 client.DefaultRequestHeaders.UserAgent.ParseAdd("Sportarr/1.0");
             })
-            .AddTransientHttpErrorPolicy(policyBuilder =>
-                policyBuilder.WaitAndRetryAsync(
-                    retryCount: 3,
-                    sleepDurationProvider: attempt => TimeSpan.FromSeconds(Math.Pow(2, attempt)),
-                    onRetry: (outcome, timespan, retryAttempt, context) =>
+            // Retry transient 5xx / network errors with a short exponential
+            // backoff (2s, 4s, 8s). Retry 429 separately with a much longer
+            // base (8s, 16s, 32s, 64s) and honor the server's Retry-After
+            // header when present. 429 means sportarr.net is explicitly
+            // asking us to slow down, so doubling down with a fast retry
+            // schedule would make things worse for everyone.
+            .AddPolicyHandler(HttpPolicyExtensions
+                .HandleTransientHttpError()
+                .OrResult(r => r.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                .WaitAndRetryAsync(
+                    retryCount: 4,
+                    sleepDurationProvider: (attempt, outcome, _) =>
                     {
-                        Console.WriteLine($"[SportarrAPI] Retry {retryAttempt} after {timespan.TotalSeconds}s delay");
-                    }
-                ));
+                        var status = outcome.Result?.StatusCode;
+                        if (status == System.Net.HttpStatusCode.TooManyRequests)
+                        {
+                            var retryAfter = outcome.Result?.Headers.RetryAfter?.Delta;
+                            if (retryAfter is { } hint && hint > TimeSpan.Zero)
+                            {
+                                return hint;
+                            }
+                            return TimeSpan.FromSeconds(Math.Pow(2, attempt + 2));
+                        }
+                        return TimeSpan.FromSeconds(Math.Pow(2, attempt));
+                    },
+                    onRetryAsync: (outcome, timespan, retryAttempt, _) =>
+                    {
+                        var status = outcome.Result?.StatusCode.ToString() ?? outcome.Exception?.GetType().Name ?? "unknown";
+                        Console.WriteLine($"[SportarrAPI] Retry {retryAttempt} after {timespan.TotalSeconds:F1}s ({status})");
+                        return Task.CompletedTask;
+                    }));
 
         return services;
     }
