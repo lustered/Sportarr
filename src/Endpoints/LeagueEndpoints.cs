@@ -8,12 +8,25 @@ using Sportarr.Api.Data;
 using Sportarr.Api.Models;
 using Sportarr.Api.Models.Requests;
 using Sportarr.Api.Services;
+using System.Collections.Concurrent;
 using System.Text.Json;
 
 namespace Sportarr.Api.Endpoints;
 
 public static class LeagueEndpoints
 {
+    // Per-league in-memory cooldown for the manual refresh button.
+    // Users who spam the button (or whose UI accidentally double-fires)
+    // were the largest single source of cache-bypassing traffic against
+    // sportarr.net before this cap landed. 5 minutes is short enough to
+    // feel responsive ("I clicked, the data refreshed, I clicked again
+    // a few minutes later") and long enough to absorb accidental
+    // duplicate clicks. State is per-process and not persisted -- a
+    // restart clears the cooldown, which is fine since the refresh
+    // pressure is exactly what a restart already trims.
+    private static readonly ConcurrentDictionary<int, DateTime> _refreshCooldowns = new();
+    private static readonly TimeSpan _refreshCooldown = TimeSpan.FromMinutes(5);
+
     public static IEndpointRouteBuilder MapLeagueEndpoints(this IEndpointRouteBuilder app)
     {
 // API: Get leagues (universal for all sports)
@@ -1741,6 +1754,32 @@ app.MapPost("/api/leagues/{id:int}/refresh-events", async (
 {
     logger.LogInformation("[LEAGUES] POST /api/leagues/{Id}/refresh-events - Refreshing events from Sportarr API", id);
 
+    // Per-league cooldown gate. Reject (don't queue) if the same
+    // league was refreshed less than 5 minutes ago -- a fresh click
+    // can't actually return materially different data, so letting
+    // it through just multiplies sportarr.net load with no user
+    // benefit. Returns 429 with Retry-After so the UI can show a
+    // sensible cooldown timer.
+    if (_refreshCooldowns.TryGetValue(id, out var lastRefresh))
+    {
+        var elapsed = DateTime.UtcNow - lastRefresh;
+        if (elapsed < _refreshCooldown)
+        {
+            var remaining = _refreshCooldown - elapsed;
+            logger.LogInformation(
+                "[LEAGUES] Refresh for league {Id} rejected: cooldown active ({Remaining:F0}s remaining)",
+                id, remaining.TotalSeconds);
+            context.Response.Headers["Retry-After"] = ((int)Math.Ceiling(remaining.TotalSeconds)).ToString();
+            return Results.Json(
+                new
+                {
+                    error = "Refresh recently completed. Try again shortly.",
+                    retryAfterSeconds = (int)Math.Ceiling(remaining.TotalSeconds)
+                },
+                statusCode: StatusCodes.Status429TooManyRequests);
+        }
+    }
+
     try
     {
         // Parse request body for optional seasons filter
@@ -1774,6 +1813,11 @@ app.MapPost("/api/leagues/{id:int}/refresh-events", async (
         {
             return Results.BadRequest(new { error = result.Message });
         }
+
+        // Record the successful refresh so the cooldown gate engages.
+        // Failures are not recorded -- if sportarr.net was actually
+        // unreachable the user should be able to retry immediately.
+        _refreshCooldowns[id] = DateTime.UtcNow;
 
         logger.LogInformation("[LEAGUES] Successfully synced events: {Message}", result.Message);
 
