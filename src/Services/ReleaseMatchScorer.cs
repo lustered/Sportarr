@@ -218,6 +218,71 @@ public class ReleaseMatchScorer
             { "Sokol" } },
     };
 
+    // Compiled hot-path regexes. Every CalculateMatchScoreInternal call walks at
+    // least four or five of these per release, and a search may evaluate thousands
+    // of releases. Pre-compiling once avoids re-parsing the same patterns on every
+    // scoring pass.
+    private static readonly Regex _titleRoundRegex = new(@"(?:Round|R|Week|W)\.?\s*(\d{1,2})\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _yearRegex = new(@"\b(20[2-9]\d)\b", RegexOptions.Compiled);
+    private static readonly Regex _parseRoundRegex = new(@"(?:Round|R|Week|W)[\.\s]*(\d{1,2})\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _gameNumberRegex = new(@"\bGame[\.\s_-]*(\d{1,2})\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _isoDateRegex = new(@"\b(20[2-9]\d)[.\-](\d{2})[.\-](\d{2})\b", RegexOptions.Compiled);
+    private static readonly Regex _euroDateRegex = new(@"\b(\d{2})[.\-](\d{2})[.\-](20[2-9]\d)\b", RegexOptions.Compiled);
+
+    // DetectSportPrefix patterns - hit per release in the parse pass.
+    private static readonly Regex _formula3WordRegex = new(@"\bFORMULA[\.\-\s]*3\b", RegexOptions.Compiled);
+    private static readonly Regex _formula3ShortRegex = new(@"\bF3\b", RegexOptions.Compiled);
+    private static readonly Regex _formula2WordRegex = new(@"\bFORMULA[\.\-\s]*2\b", RegexOptions.Compiled);
+    private static readonly Regex _formula2ShortRegex = new(@"\bF2\b", RegexOptions.Compiled);
+    private static readonly Regex _formula1ShortRegex = new(@"\bF1\b", RegexOptions.Compiled);
+    private static readonly Regex _moto3Regex = new(@"\bMOTO[\.\-\s]*3\b", RegexOptions.Compiled);
+    private static readonly Regex _moto2Regex = new(@"\bMOTO[\.\-\s]*2\b", RegexOptions.Compiled);
+
+    // Motorsport session-type detection - per-event hot path inside GetSessionTypeMatchScore.
+    private static readonly Regex _preRaceRegex = new(@"\b(pre[\s\-_.]*race|build[\s\-_.]*up|grid[\s\-_.]*walk)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _postRaceRegex = new(@"\b(post[\s\-_.]*race|race[\s\-_.]*analysis|podium)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _practiceRegex = new(@"\b(fp[123]|free\s*practice|practice\s*[123]?)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _sprintQualifyingRegex = new(@"\b(sprint\s*(qualifying|qualifyers?|qualifiers?|shootout|quali)|sq\b)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _sprintRegex = new(@"\bsprint\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _qualifyingExcludeSprintRegex = new(@"\b(qualifying|qualifyers?|qualifiers?|shootout|quali)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _qualifyingRegex = new(@"(?<!sprint\s*)\b(qualifying|qualifyers?|qualifiers?|quali\b|q[123]\b)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _raceRegex = new(@"\b(race|main\s*race|full\s*event)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _anySessionIndicatorRegex = new(
+        @"\b(fp[123]|free\s*practice|practice|qualifying|qualifyers?|qualifiers?|quali|q[123]|sprint|shootout|full\s*event|pre[\s\-_.]*race|post[\s\-_.]*race|build[\s\-_.]*up|grid[\s\-_.]*walk|podium|race[\s\-_.]*analysis)\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // Fighting-event identity regexes - hit per release for UFC/Bellator/PFL events.
+    private static readonly Regex _dwcsEventRegex = new(@"(?:dana\s*white|dwcs|contender\s*series).*?(?:s(\d+)e(\d+)|season\s*(\d+).*?episode\s*(\d+))", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _dwcsReleaseRegex = new(@"(?:dana\s*white|dwcs|contender\s*series).*?s(\d+)e(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _fightingNumberRegex = new(@"(?:ufc|bellator|pfl)\s*(?:fight\s*night\s*)?(\d+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _fightNightRegex = new(@"fight\s*night", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex _vsFightersRegex = new(@"[:\s]([a-z]+)\s*(?:vs|v)\s*([a-z]+)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // Round-number extraction (e.g. "Round 19" -> 19) - hit per event evaluated.
+    private static readonly Regex _digitsRegex = new(@"(\d+)", RegexOptions.Compiled);
+
+    // NormalizeTitle is the hottest call site - invoked once per release and several
+    // times per evaluated event. Pre-compile both replacements.
+    private static readonly Regex _normalizeSeparatorsRegex = new(@"[\.\-_]", RegexOptions.Compiled);
+    private static readonly Regex _normalizeWhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
+
+    // Bounded cache for the dynamic `\b{Regex.Escape(name)}\b` patterns built inside
+    // CheckTeamAbbreviation. Many releases share the same team variations, so caching
+    // amortizes the per-variation Regex compile across the search.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Regex> _wordBoundaryCache =
+        new(StringComparer.OrdinalIgnoreCase);
+    private const int WordBoundaryCacheMax = 4096;
+
+    private static Regex GetWordBoundaryRegex(string token)
+    {
+        if (_wordBoundaryCache.TryGetValue(token, out var cached))
+            return cached;
+        var fresh = new Regex($@"\b{Regex.Escape(token)}\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        if (_wordBoundaryCache.Count < WordBoundaryCacheMax)
+            _wordBoundaryCache.TryAdd(token, fresh);
+        return fresh;
+    }
+
     /// <summary>
     /// Calculate match score for a release against an event.
     /// Returns 0-100, higher is better.
@@ -345,7 +410,7 @@ public class ReleaseMatchScorer
         var eventRound = !string.IsNullOrEmpty(evt.Round) ? ExtractRoundNumber(evt.Round) : null;
         if (!eventRound.HasValue && !string.IsNullOrEmpty(evt.Title))
         {
-            var titleRoundMatch = Regex.Match(evt.Title, @"(?:Round|R|Week|W)\.?\s*(\d{1,2})\b", RegexOptions.IgnoreCase);
+            var titleRoundMatch = _titleRoundRegex.Match(evt.Title);
             if (titleRoundMatch.Success && int.TryParse(titleRoundMatch.Groups[1].Value, out var titleRound))
                 eventRound = titleRound;
         }
@@ -432,12 +497,12 @@ public class ReleaseMatchScorer
         var parsed = new ParsedRelease();
 
         // Extract year (4 digits, 2020+)
-        var yearMatch = Regex.Match(title, @"\b(20[2-9]\d)\b");
+        var yearMatch = _yearRegex.Match(title);
         if (yearMatch.Success)
             parsed.Year = int.Parse(yearMatch.Groups[1].Value);
 
         // Extract round/week number
-        var roundMatch = Regex.Match(title, @"(?:Round|R|Week|W)[\.\s]*(\d{1,2})\b", RegexOptions.IgnoreCase);
+        var roundMatch = _parseRoundRegex.Match(title);
         if (roundMatch.Success)
             parsed.RoundNumber = int.Parse(roundMatch.Groups[1].Value);
 
@@ -446,7 +511,7 @@ public class ReleaseMatchScorer
         // event's stored EpisodeNumber are present, mismatch is a
         // reliable wrong-game signal independent of any round-number
         // scheme conflict.
-        var gameMatch = Regex.Match(title, @"\bGame[\.\s_-]*(\d{1,2})\b", RegexOptions.IgnoreCase);
+        var gameMatch = _gameNumberRegex.Match(title);
         if (gameMatch.Success && int.TryParse(gameMatch.Groups[1].Value, out var gameNum))
             parsed.GameNumber = gameNum;
 
@@ -457,7 +522,7 @@ public class ReleaseMatchScorer
         // it didn't. Without DD-first the date is silently dropped on releases
         // like "NHL SC 2026 / Round 1 / Game 6 / 30.04.2026 / ..." and the
         // matcher can't bonus the day, hurting overall score.
-        var dateMatch = Regex.Match(title, @"\b(20[2-9]\d)[.\-](\d{2})[.\-](\d{2})\b");
+        var dateMatch = _isoDateRegex.Match(title);
         if (dateMatch.Success)
         {
             parsed.Year = int.Parse(dateMatch.Groups[1].Value);
@@ -470,7 +535,7 @@ public class ReleaseMatchScorer
             // string happens to look numeric but isn't a valid date the
             // capture will fail validation in GetDateMatchScore (try/catch
             // around new DateTime(...)).
-            var euroDateMatch = Regex.Match(title, @"\b(\d{2})[.\-](\d{2})[.\-](20[2-9]\d)\b");
+            var euroDateMatch = _euroDateRegex.Match(title);
             if (euroDateMatch.Success
                 && int.TryParse(euroDateMatch.Groups[1].Value, out var euroDay)
                 && int.TryParse(euroDateMatch.Groups[2].Value, out var euroMonth)
@@ -504,18 +569,18 @@ public class ReleaseMatchScorer
         if (normalized.Contains("FORMULA.E") || normalized.Contains("FORMULAE") ||
             normalized.Contains("FORMULA E") || normalized.Contains("FE."))
             return "FormulaE";
-        if (Regex.IsMatch(normalized, @"\bFORMULA[\.\-\s]*3\b") || normalized.Contains("F3.") ||
-            Regex.IsMatch(normalized, @"\bF3\b"))
+        if (_formula3WordRegex.IsMatch(normalized) || normalized.Contains("F3.") ||
+            _formula3ShortRegex.IsMatch(normalized))
             return "Formula3";
-        if (Regex.IsMatch(normalized, @"\bFORMULA[\.\-\s]*2\b") || normalized.Contains("F2.") ||
-            Regex.IsMatch(normalized, @"\bF2\b"))
+        if (_formula2WordRegex.IsMatch(normalized) || normalized.Contains("F2.") ||
+            _formula2ShortRegex.IsMatch(normalized))
             return "Formula2";
         if (normalized.Contains("FORMULA1") || normalized.Contains("FORMULA.1") || normalized.Contains("F1.") ||
-            Regex.IsMatch(normalized, @"\bF1\b"))
+            _formula1ShortRegex.IsMatch(normalized))
             return "Formula1";
-        if (Regex.IsMatch(normalized, @"\bMOTO[\.\-\s]*3\b"))
+        if (_moto3Regex.IsMatch(normalized))
             return "Moto3";
-        if (Regex.IsMatch(normalized, @"\bMOTO[\.\-\s]*2\b"))
+        if (_moto2Regex.IsMatch(normalized))
             return "Moto2";
         if (normalized.Contains("MOTOGP") || normalized.Contains("MOTO.GP") || normalized.Contains("MOTO GP"))
             return "MotoGP";
@@ -799,36 +864,36 @@ public class ReleaseMatchScorer
         // Check for PRE-RACE and POST-RACE shows FIRST (must come before Race check)
         // These are NOT the actual race - they're coverage/analysis shows
         // Patterns: "Pre-Race", "Pre Race Show", "Post-Race", "Post Race Analysis", "Grid Walk", "Build Up", "Podium"
-        if (Regex.IsMatch(normalizedTitle, @"\b(pre[\s\-_.]*race|build[\s\-_.]*up|grid[\s\-_.]*walk)\b", RegexOptions.IgnoreCase))
+        if (_preRaceRegex.IsMatch(normalizedTitle))
             return MotorsportSessionType.Practice; // Treat as non-race content
-        if (Regex.IsMatch(normalizedTitle, @"\b(post[\s\-_.]*race|race[\s\-_.]*analysis|podium)\b", RegexOptions.IgnoreCase))
+        if (_postRaceRegex.IsMatch(normalizedTitle))
             return MotorsportSessionType.Practice; // Treat as non-race content
 
         // Check for PRACTICE sessions first (FP1, FP2, FP3, Free Practice, Practice)
-        if (Regex.IsMatch(normalizedTitle, @"\b(fp[123]|free\s*practice|practice\s*[123]?)\b", RegexOptions.IgnoreCase))
+        if (_practiceRegex.IsMatch(normalizedTitle))
             return MotorsportSessionType.Practice;
 
         // Check for SPRINT QUALIFYING / SPRINT SHOOTOUT (must check BEFORE plain "sprint")
         // Matches: "Sprint Qualifying", "Sprint Qualifiers", "Sprint Shootout", "SprintQualifying", "SQ"
-        if (Regex.IsMatch(normalizedTitle, @"\b(sprint\s*(qualifying|qualifyers?|qualifiers?|shootout|quali)|sq\b)", RegexOptions.IgnoreCase))
+        if (_sprintQualifyingRegex.IsMatch(normalizedTitle))
             return MotorsportSessionType.SprintQualifying;
 
         // Check for SPRINT RACE (only "sprint" without "qualifying" or "shootout")
         // Must come AFTER sprint qualifying check
-        if (Regex.IsMatch(normalizedTitle, @"\bsprint\b", RegexOptions.IgnoreCase) &&
-            !Regex.IsMatch(normalizedTitle, @"\b(qualifying|qualifyers?|qualifiers?|shootout|quali)\b", RegexOptions.IgnoreCase))
+        if (_sprintRegex.IsMatch(normalizedTitle) &&
+            !_qualifyingExcludeSprintRegex.IsMatch(normalizedTitle))
             return MotorsportSessionType.Sprint;
 
         // Check for REGULAR QUALIFYING (not sprint qualifying)
         // Matches: "Qualifying", "Qualifyers", "Qualifiers", "Q1", "Q2", "Q3", "Quali"
         // Must NOT have "sprint" before it
-        if (Regex.IsMatch(normalizedTitle, @"(?<!sprint\s*)\b(qualifying|qualifyers?|qualifiers?|quali\b|q[123]\b)", RegexOptions.IgnoreCase) &&
+        if (_qualifyingRegex.IsMatch(normalizedTitle) &&
             !normalizedTitle.Contains("sprint", StringComparison.OrdinalIgnoreCase))
             return MotorsportSessionType.Qualifying;
 
         // Check for RACE - explicit race indicators
         // "Race", "Main Race", "Full Event", "Grand Prix" without other session indicators
-        if (Regex.IsMatch(normalizedTitle, @"\b(race|main\s*race|full\s*event)\b", RegexOptions.IgnoreCase) ||
+        if (_raceRegex.IsMatch(normalizedTitle) ||
             (normalizedTitle.Contains("grand prix", StringComparison.OrdinalIgnoreCase) &&
              !HasAnySessionIndicator(normalizedTitle)))
             return MotorsportSessionType.Race;
@@ -851,9 +916,7 @@ public class ReleaseMatchScorer
     /// </summary>
     private bool HasAnySessionIndicator(string normalizedTitle)
     {
-        return Regex.IsMatch(normalizedTitle,
-            @"\b(fp[123]|free\s*practice|practice|qualifying|qualifyers?|qualifiers?|quali|q[123]|sprint|shootout|full\s*event|pre[\s\-_.]*race|post[\s\-_.]*race|build[\s\-_.]*up|grid[\s\-_.]*walk|podium|race[\s\-_.]*analysis)\b",
-            RegexOptions.IgnoreCase);
+        return _anySessionIndicatorRegex.IsMatch(normalizedTitle);
     }
 
     /// <summary>
@@ -1141,7 +1204,7 @@ public class ReleaseMatchScorer
         // === DANA WHITE'S CONTENDER SERIES (DWCS) - Season/Episode based ===
         // Event title: "Dana White's Contender Series S07E01" or "DWCS Season 7 Episode 1"
         // Release title: "UFC.Dana.Whites.Contender.Series.S07E01" or "DWCS.S07E01"
-        var dwcsEventMatch = Regex.Match(normalizedEvent, @"(?:dana\s*white|dwcs|contender\s*series).*?(?:s(\d+)e(\d+)|season\s*(\d+).*?episode\s*(\d+))", RegexOptions.IgnoreCase);
+        var dwcsEventMatch = _dwcsEventRegex.Match(normalizedEvent);
         if (dwcsEventMatch.Success)
         {
             hasEventIdentifier = true;
@@ -1149,7 +1212,7 @@ public class ReleaseMatchScorer
             var eventEpisode = dwcsEventMatch.Groups[2].Success ? dwcsEventMatch.Groups[2].Value : dwcsEventMatch.Groups[4].Value;
 
             // Check if release has matching season/episode
-            var dwcsReleaseMatch = Regex.Match(normalizedRelease, @"(?:dana\s*white|dwcs|contender\s*series).*?s(\d+)e(\d+)", RegexOptions.IgnoreCase);
+            var dwcsReleaseMatch = _dwcsReleaseRegex.Match(normalizedRelease);
             if (dwcsReleaseMatch.Success)
             {
                 var releaseSeason = dwcsReleaseMatch.Groups[1].Value;
@@ -1172,20 +1235,20 @@ public class ReleaseMatchScorer
         // === UFC PPV / Fight Night - Number based ===
         // Event: "UFC 299" or "UFC Fight Night 240"
         // Release: "UFC.299.Main.Card" or "UFC.Fight.Night.240"
-        var eventNumberMatch = Regex.Match(normalizedEvent, @"(?:ufc|bellator|pfl)\s*(?:fight\s*night\s*)?(\d+)", RegexOptions.IgnoreCase);
+        var eventNumberMatch = _fightingNumberRegex.Match(normalizedEvent);
         if (eventNumberMatch.Success && !hasEventIdentifier)
         {
             hasEventIdentifier = true;
             var eventNumber = eventNumberMatch.Groups[1].Value;
 
             // Check if event is specifically a "Fight Night" vs PPV
-            var eventIsFightNight = Regex.IsMatch(normalizedEvent, @"fight\s*night", RegexOptions.IgnoreCase);
+            var eventIsFightNight = _fightNightRegex.IsMatch(normalizedEvent);
 
-            var releaseNumberMatch = Regex.Match(normalizedRelease, @"(?:ufc|bellator|pfl)\s*(?:fight\s*night\s*)?(\d+)", RegexOptions.IgnoreCase);
+            var releaseNumberMatch = _fightingNumberRegex.Match(normalizedRelease);
             if (releaseNumberMatch.Success)
             {
                 var releaseNumber = releaseNumberMatch.Groups[1].Value;
-                var releaseIsFightNight = Regex.IsMatch(normalizedRelease, @"fight\s*night", RegexOptions.IgnoreCase);
+                var releaseIsFightNight = _fightNightRegex.IsMatch(normalizedRelease);
 
                 if (releaseNumber == eventNumber)
                 {
@@ -1210,7 +1273,7 @@ public class ReleaseMatchScorer
         // === Fighter name matching (for events named by headliners) ===
         // Event: "UFC Fight Night: Covington vs Buckley"
         // Release: "UFC.Fight.Night.Covington.vs.Buckley"
-        var vsMatch = Regex.Match(normalizedEvent, @"[:\s]([a-z]+)\s*(?:vs|v)\s*([a-z]+)", RegexOptions.IgnoreCase);
+        var vsMatch = _vsFightersRegex.Match(normalizedEvent);
         if (vsMatch.Success)
         {
             var fighter1 = vsMatch.Groups[1].Value.ToLowerInvariant();
@@ -1257,7 +1320,7 @@ public class ReleaseMatchScorer
     /// </summary>
     private int? ExtractRoundNumber(string round)
     {
-        var match = Regex.Match(round, @"(\d+)");
+        var match = _digitsRegex.Match(round);
         if (match.Success && int.TryParse(match.Groups[1].Value, out var roundNum))
             return roundNum;
         return null;
@@ -1313,10 +1376,10 @@ public class ReleaseMatchScorer
         var normalized = SearchNormalizationService.RemoveDiacritics(title);
 
         // Replace common separators with spaces
-        normalized = Regex.Replace(normalized, @"[\.\-_]", " ");
+        normalized = _normalizeSeparatorsRegex.Replace(normalized, " ");
 
         // Collapse multiple spaces
-        normalized = Regex.Replace(normalized, @"\s+", " ");
+        normalized = _normalizeWhitespaceRegex.Replace(normalized, " ");
 
         return normalized.Trim().ToLowerInvariant();
     }
@@ -1430,7 +1493,7 @@ public class ReleaseMatchScorer
                 foreach (var variation in variations)
                 {
                     var normalizedVariation = NormalizeTitle(variation);
-                    if (Regex.IsMatch(normalizedRelease, $@"\b{Regex.Escape(normalizedVariation)}\b", RegexOptions.IgnoreCase))
+                    if (GetWordBoundaryRegex(normalizedVariation).IsMatch(normalizedRelease))
                         return (true, 15);
                 }
             }
@@ -1443,61 +1506,61 @@ public class ReleaseMatchScorer
     /// Known sport identifiers that indicate a release belongs to a specific sport.
     /// Used to detect cross-sport mismatches and prevent false positives.
     /// </summary>
-    private static readonly (string Pattern, string Sport)[] CrossSportIdentifiers = new[]
+    private static readonly (Regex Pattern, string Sport)[] CrossSportIdentifiers = new[]
     {
         // Motorsport series - CRITICAL: prevents cross-series matching (MotoGP vs F1, Moto3 vs F1, etc.)
         // Check more specific patterns first (Moto3 before MotoGP, F3 before F1)
-        (@"\bmoto[\.\-\s]*3\b", "Moto3"),
-        (@"\bmoto[\.\-\s]*2\b", "Moto2"),
-        (@"\bmoto[\.\-\s]*gp\b", "MotoGP"),
-        (@"\bformula[\.\-\s]*e\b", "FormulaE"),
-        (@"\bformula[\.\-\s]*3\b", "Formula3"),
-        (@"\bformula[\.\-\s]*2\b", "Formula2"),
-        (@"\bformula[\.\-\s]*1\b", "Formula1"),
-        (@"\bf1[\.\b]", "Formula1"),
-        (@"\bf2[\.\b]", "Formula2"),
-        (@"\bf3[\.\b]", "Formula3"),
-        (@"\bindycar\b", "IndyCar"),
-        (@"\bnascar\b", "NASCAR"),
-        (@"\bwsbk\b", "WSBK"),
-        (@"\bsuperbike", "WSBK"),
-        (@"\bwrc\b", "WRC"),
-        (@"\bworld[\.\-\s]*rally\b", "WRC"),
-        (@"\bwec\b", "WEC"),
-        (@"\bworld[\.\-\s]*endurance\b", "WEC"),
+        (new Regex(@"\bmoto[\.\-\s]*3\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Moto3"),
+        (new Regex(@"\bmoto[\.\-\s]*2\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Moto2"),
+        (new Regex(@"\bmoto[\.\-\s]*gp\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "MotoGP"),
+        (new Regex(@"\bformula[\.\-\s]*e\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "FormulaE"),
+        (new Regex(@"\bformula[\.\-\s]*3\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Formula3"),
+        (new Regex(@"\bformula[\.\-\s]*2\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Formula2"),
+        (new Regex(@"\bformula[\.\-\s]*1\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Formula1"),
+        (new Regex(@"\bf1[\.\b]", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Formula1"),
+        (new Regex(@"\bf2[\.\b]", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Formula2"),
+        (new Regex(@"\bf3[\.\b]", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Formula3"),
+        (new Regex(@"\bindycar\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "IndyCar"),
+        (new Regex(@"\bnascar\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "NASCAR"),
+        (new Regex(@"\bwsbk\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "WSBK"),
+        (new Regex(@"\bsuperbike", RegexOptions.Compiled | RegexOptions.IgnoreCase), "WSBK"),
+        (new Regex(@"\bwrc\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "WRC"),
+        (new Regex(@"\bworld[\.\-\s]*rally\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "WRC"),
+        (new Regex(@"\bwec\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "WEC"),
+        (new Regex(@"\bworld[\.\-\s]*endurance\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "WEC"),
 
         // Olympics
-        (@"\bolympic", "Olympics"),
-        (@"\bolympiad", "Olympics"),
-        (@"\bwinter[\s\.\-_]*games\b", "Olympics"),
-        (@"\bsummer[\s\.\-_]*games\b", "Olympics"),
-        (@"\bsnowboard", "Snowboard"),
-        (@"\bski[\s\.\-_]*jump", "Ski Jumping"),
-        (@"\bcross[\s\.\-_]*country[\s\.\-_]*ski", "Cross-Country Skiing"),
-        (@"\balpine[\s\.\-_]*ski", "Alpine Skiing"),
-        (@"\bbiathlon\b", "Biathlon"),
-        (@"\bbobsled\b", "Bobsled"),
-        (@"\bbobsleigh\b", "Bobsled"),
-        (@"\bluge\b", "Luge"),
-        (@"\bcurling\b", "Curling"),
-        (@"\bfigure[\s\.\-_]*skat", "Figure Skating"),
-        (@"\bspeed[\s\.\-_]*skat", "Speed Skating"),
-        (@"\bice[\s\.\-_]*hockey\b", "Ice Hockey"),
-        (@"\btennis\b", "Tennis"),
-        (@"\bgolf\b", "Golf"),
-        (@"\bcricket\b", "Cricket"),
-        (@"\brugby\b", "Rugby"),
-        (@"\bswimming\b", "Swimming"),
-        (@"\bathletics\b", "Athletics"),
-        (@"\bgymnastics\b", "Gymnastics"),
-        (@"\bwrestling\b", "Wrestling"),
-        (@"\bfencing\b", "Fencing"),
-        (@"\barchery\b", "Archery"),
-        (@"\bsailing\b", "Sailing"),
-        (@"\browing\b", "Rowing"),
-        (@"\bdiving\b", "Diving"),
-        (@"\bsurfing\b", "Surfing"),
-        (@"\bskateboard", "Skateboarding"),
+        (new Regex(@"\bolympic", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Olympics"),
+        (new Regex(@"\bolympiad", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Olympics"),
+        (new Regex(@"\bwinter[\s\.\-_]*games\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Olympics"),
+        (new Regex(@"\bsummer[\s\.\-_]*games\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Olympics"),
+        (new Regex(@"\bsnowboard", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Snowboard"),
+        (new Regex(@"\bski[\s\.\-_]*jump", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Ski Jumping"),
+        (new Regex(@"\bcross[\s\.\-_]*country[\s\.\-_]*ski", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Cross-Country Skiing"),
+        (new Regex(@"\balpine[\s\.\-_]*ski", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Alpine Skiing"),
+        (new Regex(@"\bbiathlon\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Biathlon"),
+        (new Regex(@"\bbobsled\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Bobsled"),
+        (new Regex(@"\bbobsleigh\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Bobsled"),
+        (new Regex(@"\bluge\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Luge"),
+        (new Regex(@"\bcurling\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Curling"),
+        (new Regex(@"\bfigure[\s\.\-_]*skat", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Figure Skating"),
+        (new Regex(@"\bspeed[\s\.\-_]*skat", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Speed Skating"),
+        (new Regex(@"\bice[\s\.\-_]*hockey\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Ice Hockey"),
+        (new Regex(@"\btennis\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Tennis"),
+        (new Regex(@"\bgolf\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Golf"),
+        (new Regex(@"\bcricket\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Cricket"),
+        (new Regex(@"\brugby\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Rugby"),
+        (new Regex(@"\bswimming\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Swimming"),
+        (new Regex(@"\bathletics\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Athletics"),
+        (new Regex(@"\bgymnastics\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Gymnastics"),
+        (new Regex(@"\bwrestling\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Wrestling"),
+        (new Regex(@"\bfencing\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Fencing"),
+        (new Regex(@"\barchery\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Archery"),
+        (new Regex(@"\bsailing\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Sailing"),
+        (new Regex(@"\browing\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Rowing"),
+        (new Regex(@"\bdiving\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Diving"),
+        (new Regex(@"\bsurfing\b", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Surfing"),
+        (new Regex(@"\bskateboard", RegexOptions.Compiled | RegexOptions.IgnoreCase), "Skateboarding"),
     };
 
     /// <summary>
@@ -1512,14 +1575,13 @@ public class ReleaseMatchScorer
 
         foreach (var (pattern, sport) in CrossSportIdentifiers)
         {
-            if (Regex.IsMatch(releaseTitle, pattern, RegexOptions.IgnoreCase))
+            if (pattern.IsMatch(releaseTitle))
             {
                 var sportLower = sport.ToLowerInvariant();
                 if (eventSport.Contains(sportLower) || eventLeague.Contains(sportLower) || eventTitle.Contains(sportLower))
                     continue;
 
-                if (Regex.IsMatch(eventSport, pattern, RegexOptions.IgnoreCase) ||
-                    Regex.IsMatch(eventLeague, pattern, RegexOptions.IgnoreCase))
+                if (pattern.IsMatch(eventSport) || pattern.IsMatch(eventLeague))
                     continue;
 
                 return true;
