@@ -202,7 +202,15 @@ public class LeagueEventSyncService
             _logger.LogInformation("[League Event Sync] Processing season {Current}/{Total}: {Season}",
                 seasonIndex, seasons.Count, season);
 
-            var events = await _sportarrApiClient.GetLeagueSeasonAsync(league.ExternalId, season, forceRefresh);
+            // Only force-refresh current/future seasons. Historical seasons
+            // are immutable once finalized, so a cache hit against sportarr-api
+            // is correct — and dropping forceRefresh on them lets the refresh
+            // button walk the full season list (picking up seasons that were
+            // populated upstream after the league was first added) without
+            // multiplying TheSportsDB load by the league's history depth.
+            // For NBA that's the difference between 7 upstream fetches and 72.
+            var seasonForceRefresh = forceRefresh && IsCurrentOrFutureSeason(season);
+            var events = await _sportarrApiClient.GetLeagueSeasonAsync(league.ExternalId, season, seasonForceRefresh);
 
             if (events == null)
             {

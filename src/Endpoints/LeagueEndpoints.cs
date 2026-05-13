@@ -1348,15 +1348,17 @@ app.MapPost("/api/leagues", async (HttpContext context, SportarrDbContext db, IS
                 using var scope = scopeFactory.CreateScope();
                 var syncService = scope.ServiceProvider.GetRequiredService<LeagueEventSyncService>();
 
-                // fullHistoricalSync=true: this is the one call site that should
-                // walk every historical season. The user just added the league;
-                // their cache is empty; we populate the full event history once
-                // so library scans against old files (NBA 2014-2015, etc.) can
-                // resolve. Subsequent refresh button clicks and the background
-                // auto-sync both run with fullHistoricalSync=false, restricting
-                // their work to current+future seasons -- old seasons are
-                // immutable, re-walking them every refresh / scheduled cycle
-                // was saturating sportarr-api with ~95% wasted upstream traffic.
+                // fullHistoricalSync=true: the user just added the league, so
+                // we populate the full event history once so library scans
+                // against old files (NBA 2014-2015, etc.) can resolve. The
+                // refresh button also walks the full history (so users pick
+                // up seasons that appear upstream after the initial add) but
+                // only force-refreshes current/future seasons inside the
+                // per-season loop, hitting sportarr-api's cache for the rest.
+                // The background auto-sync still runs with fullHistoricalSync
+                // =false because walking history on every daily cycle would
+                // multiply baseline upstream traffic by the league's history
+                // depth across every install.
                 //
                 // forceRefresh=true: a user-initiated add. They expect the local
                 // DB to be current with TheSportsDB at the moment of add, not
@@ -1794,20 +1796,18 @@ app.MapPost("/api/leagues/{id:int}/refresh-events", async (
             seasons = request?.Seasons;
         }
 
-        // User-initiated refresh: ask sportarr-api to bypass its own cache via
-        // Cache-Control: no-cache so we get the latest schedule from TheSportsDB
-        // in this request. fullHistoricalSync stays false because the refresh
-        // button is meant for "pick up new games in the current season", not
-        // "re-fetch all 72 seasons of NBA from 1947 onward". Historical seasons
-        // are immutable and were populated when the league was first added;
-        // walking them on every refresh click was sending ~95% wasted traffic
-        // to sportarr-api / thesportsdb (each click was iterating dozens of
-        // seasons sequentially with forceRefresh=true, which at thesportsdb's
-        // 5-30s response times during heavy periods saturated the upstream
-        // semaphore for everyone). The optimized branch in LeagueEventSync
-        // limits the walk to current + future seasons, which is what users
-        // actually want from the refresh button.
-        var result = await syncService.SyncLeagueEventsAsync(id, seasons, fullHistoricalSync: false, forceRefresh: true);
+        // User-initiated refresh: walk every season sportarr-api knows about
+        // (fullHistoricalSync=true), but only force-refresh current/future
+        // seasons inside the per-season loop (LeagueEventSyncService). The
+        // intent is: a click should pick up any newly added events in the
+        // active season AND any historical seasons that appeared upstream
+        // after the league was first added, without multiplying TheSportsDB
+        // load by the league's full history depth on every click. Historical
+        // seasons get walked but hit sportarr-api's 7-day cache, so the cost
+        // is dominated by the small handful of current/future seasons that
+        // actually need a fresh fetch. The per-league 5-minute cooldown above
+        // still bounds how often any one league can be re-walked.
+        var result = await syncService.SyncLeagueEventsAsync(id, seasons, fullHistoricalSync: true, forceRefresh: true);
 
         if (!result.Success)
         {
