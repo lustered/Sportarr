@@ -543,10 +543,20 @@ public class QBittorrentClient
     }
 
     /// <summary>
-    /// Get all torrents
+    /// Get all torrents.
+    ///
+    /// Wrapped in a per-call CancellationToken with a tight timeout because the
+    /// EnhancedDownloadMonitorService polls this every 30 seconds. The named
+    /// HttpClient's overall Timeout is 100 seconds; with a 30s poll cadence
+    /// up to three or four requests can stack up against a hung qBittorrent
+    /// before the global timeout reaps the oldest. A managed-dump capture
+    /// caught this happening — 491 inbound TCP backlog entries piled up on a
+    /// stalled remote qbit instance. Failing fast (15s for login + listing
+    /// combined) keeps at most one request in flight at a time.
     /// </summary>
     public async Task<List<QBittorrentTorrent>?> GetTorrentsAsync(DownloadClient config)
     {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         try
         {
             var baseUrl = GetBaseUrl(config);
@@ -557,14 +567,20 @@ public class QBittorrentClient
                 return null;
             }
 
-            using var response = await client.GetAsync($"{baseUrl}/api/v2/torrents/info");
+            using var response = await client.GetAsync($"{baseUrl}/api/v2/torrents/info", cts.Token);
 
             if (response.IsSuccessStatusCode)
             {
-                var torrents = await response.Content.ReadFromJsonAsync<List<QBittorrentTorrent>>();
+                var torrents = await response.Content.ReadFromJsonAsync<List<QBittorrentTorrent>>(cts.Token);
                 return torrents;
             }
 
+            return null;
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            _logger.LogWarning("[qBittorrent] GetTorrents timed out after 15s for {Host}:{Port} - server may be unreachable",
+                config.Host, config.Port);
             return null;
         }
         catch (Exception ex)
@@ -1383,6 +1399,11 @@ public class QBittorrentClient
             return true;
         }
 
+        // Tight per-call timeout — see the comment on GetTorrentsAsync for the
+        // motivation. A hung remote qBittorrent must not be allowed to occupy
+        // the HttpClient for the full 100s configured timeout while monitor
+        // polls keep arriving every 30s.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         try
         {
             var client = GetHttpClient(config);
@@ -1395,8 +1416,8 @@ public class QBittorrentClient
                 new KeyValuePair<string, string>("password", password ?? "")
             });
 
-            using var response = await client.PostAsync(loginUrl, content);
-            var responseBody = await response.Content.ReadAsStringAsync();
+            using var response = await client.PostAsync(loginUrl, content, cts.Token);
+            var responseBody = await response.Content.ReadAsStringAsync(cts.Token);
 
             _logger.LogDebug("[qBittorrent] Login response: Status={StatusCode}", response.StatusCode);
             _logger.LogTrace("[qBittorrent] Login response body: {Body}", responseBody);
@@ -1423,6 +1444,12 @@ public class QBittorrentClient
             }
 
             _logger.LogWarning("[qBittorrent] Login failed: Status={Status}, Response={Response}", response.StatusCode, responseBody);
+            return false;
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            _logger.LogWarning("[qBittorrent] Login timed out after 10s for {Host}:{Port}",
+                config.Host, config.Port);
             return false;
         }
         catch (HttpRequestException ex)

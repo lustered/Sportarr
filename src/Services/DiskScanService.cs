@@ -14,8 +14,15 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
     private readonly ILogger<DiskScanService> _logger;
     private const int ScanIntervalMinutes = 60; // Scan every hour
 
-    // Event to allow manual trigger of scan
-    private readonly ManualResetEventSlim _scanTrigger = new(false);
+    // Semaphore used as an async-friendly trigger. Initialized to 0 so the
+    // first WaitAsync inside ExecuteAsync blocks until either the interval
+    // timeout elapses or TriggerScanNow() releases the semaphore. Was a
+    // ManualResetEventSlim, but the only way to wait on that with a timeout
+    // is the synchronous Wait(TimeSpan), which permanently consumes one of
+    // the small handful of ThreadPool workers when wrapped in Task.Run.
+    // A managed-dump capture caught it blocked there. SemaphoreSlim.WaitAsync
+    // is purely cooperative — no worker thread parked.
+    private readonly SemaphoreSlim _scanTrigger = new(0, 1);
     private bool _disposed = false;
 
     public DiskScanService(
@@ -27,11 +34,14 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
     }
 
     /// <summary>
-    /// Trigger an immediate disk scan (instance method for DI)
+    /// Trigger an immediate disk scan (instance method for DI). Idempotent —
+    /// already-pending triggers are swallowed so the caller never has to care
+    /// whether a previous trigger has been observed yet.
     /// </summary>
     public void TriggerScanNow()
     {
-        _scanTrigger.Set();
+        try { _scanTrigger.Release(); }
+        catch (SemaphoreFullException) { /* already pending - nothing to do */ }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
@@ -75,11 +85,13 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
                 _logger.LogError(ex, "Error during disk scan");
             }
 
-            // Wait for next scan or manual trigger
+            // Wait for next scan or manual trigger. WaitAsync returns true when
+            // TriggerScanNow released the semaphore (manual trigger), false when
+            // the timeout elapses (regular cadence). Either is fine — we just
+            // loop back to scan. OperationCanceledException = host shutdown.
             try
             {
-                await Task.Run(() => _scanTrigger.Wait(TimeSpan.FromMinutes(ScanIntervalMinutes), stoppingToken), stoppingToken);
-                _scanTrigger.Reset();
+                await _scanTrigger.WaitAsync(TimeSpan.FromMinutes(ScanIntervalMinutes), stoppingToken);
             }
             catch (OperationCanceledException)
             {
