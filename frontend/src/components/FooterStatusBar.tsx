@@ -382,7 +382,7 @@ function FooterStatusBar() {
   const hasQueuedSearches = searchQueue && (searchQueue.pendingCount > 0 || searchQueue.activeCount > 0);
   const hasRecentSearches =
     searchQueue &&
-    searchQueue.recentlyCompleted.some((s: SearchQueueItem) => {
+    searchQueue.recentlyCompleted?.some((s: SearchQueueItem) => {
       if (seenSearchIds.current.has(s.id)) return false;
       if (!s.completedAt) return false;
       const completedTime = new Date(s.completedAt).getTime();

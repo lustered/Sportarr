@@ -558,9 +558,32 @@ app.Use(async (context, next) =>
                     urlBase = "/" + urlBase;
                 urlBase = urlBase.TrimEnd('/');
 
-                // Inject urlBase script before the first script tag
-                // This sets window.Sportarr.urlBase BEFORE main.tsx runs
-                var urlBaseScript = $@"<script>window.Sportarr = window.Sportarr || {{}}; window.Sportarr.urlBase = '{urlBase}';</script>";
+                // Inject the full window.Sportarr object before the first script tag.
+                // axios.create() in the frontend reads urlBase + apiRoot at module-load
+                // time, and the X-Api-Key interceptor reads apiKey per request. Setting
+                // only urlBase here leaves the rest undefined until /initialize.json
+                // resolves, racing the first React Query refetch and returning auth-less
+                // requests that get rejected mid-render. Mirror the /initialize.json
+                // shape so the client has a complete object before any import evaluates.
+                // System.Text.Json's default HTML-safe encoder escapes angle
+                // brackets, so embedding the serialized object inside a script
+                // tag cannot be closed early by a value containing a literal
+                // closing tag.
+                var initialState = new
+                {
+                    apiRoot = "",
+                    apiKey = config.ApiKey,
+                    release = Sportarr.Api.Version.GetFullVersion(),
+                    version = Sportarr.Api.Version.GetFullVersion(),
+                    instanceName = "Sportarr",
+                    theme = "auto",
+                    branch = "main",
+                    analytics = false,
+                    urlBase = urlBase,
+                    isProduction = !app.Environment.IsDevelopment()
+                };
+                var initialStateJson = JsonSerializer.Serialize(initialState);
+                var urlBaseScript = $"<script>window.Sportarr = {initialStateJson};</script>";
                 html = html.Replace("<script", urlBaseScript + "<script");
 
                 // Rewrite asset paths to include urlBase
