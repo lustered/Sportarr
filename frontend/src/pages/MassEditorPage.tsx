@@ -1,4 +1,4 @@
-import { formatEventDate } from '../utils/timezone';
+import { eventDisplayDate } from '../utils/timezone';
 import React, { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { CheckIcon, XMarkIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
@@ -367,7 +367,7 @@ const MassEditorPage: React.FC = () => {
                   <td className="px-4 py-3 text-white">{event.title}</td>
                   <td className="px-4 py-3 text-gray-400">{event.organization}</td>
                   <td className="px-4 py-3 text-gray-400">
-                    {formatEventDate(event, null)}
+                    {new Date(eventDisplayDate(event)).toLocaleDateString()}
                   </td>
                   <td className="px-4 py-3">
                     {event.monitored ? (

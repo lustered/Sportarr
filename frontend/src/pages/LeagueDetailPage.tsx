@@ -16,7 +16,7 @@ import RefreshScopeModal, { type RefreshScope } from '../components/RefreshScope
 import { useSearchQueueStatus, useDownloadQueue } from '../api/hooks';
 import { useUISettings } from '../hooks/useUISettings';
 import { useCompactView } from '../hooks/useCompactView';
-import { formatDateInTimezone, formatEventDate } from '../utils/timezone';
+import { eventDisplayDate, formatDateInTimezone } from '../utils/timezone';
 import { PAGE_PADDING, BUTTON_PRIMARY, BUTTON_SECONDARY, BUTTON_INFO, BUTTON_DESTRUCTIVE } from '../utils/designTokens';
 import { isFightingSport, isTeamlessSport, usesFightingEventTypes } from '../utils/leagueSportRules';
 
@@ -246,14 +246,6 @@ export default function LeagueDetailPage() {
 
   // Track which seasons are expanded (default: none - user manually expands)
   const [expandedSeasons, setExpandedSeasons] = useState<Set<string>>(new Set());
-
-  // Toggle for showing cancelled / postponed events in the season list.
-  // Default off because for the typical admin a cancelled game is noise -- it
-  // never broadcasts, there's nothing to record, and including it inflates
-  // the per-season visual scope without giving the admin anything to act on.
-  // Owners who actually want to audit cancellations flip the toggle and the
-  // list re-renders to include them, badged distinctly.
-  const [showCancelled, setShowCancelled] = useState(false);
   const [dvrChannelSearch, setDvrChannelSearch] = useState('');
   const [descriptionExpanded, setDescriptionExpanded] = useState(false);
   const [isDescClamped, setIsDescClamped] = useState(false);
@@ -985,44 +977,47 @@ export default function LeagueDetailPage() {
     setIsRefreshScopeModalOpen(false);
 
     try {
-      // Refresh runs as a background task now — the endpoint returns
-      // a queued task id, and FooterStatusBar (bottom-left) tracks it
-      // through to completion. Toast just acknowledges the queue;
-      // detailed per-season progress lives on the task row and the
-      // footer renders it.
+      const scopeLabel = scope === 'full' ? 'all seasons' : 'current season';
+      toast.info('Refreshing events...', {
+        description: `Fetching ${scopeLabel} from Sportarr for ${league?.name}`,
+      });
+
+      // Don't specify seasons - let the backend fetch the available seasons
+      // from Sportarr API, scoped to whichever window the user picked.
       const response = await apiClient.post(`/leagues/${id}/refresh-events`, { scope });
 
-      if (response.data.queued) {
-        const scopeLabel = scope === 'full' ? 'all seasons' : 'current season';
-        toast.info('Refresh queued', {
-          description: `${league?.name}: ${scopeLabel}. Progress in the status bar (bottom-left).`,
+      if (response.data.success) {
+        toast.success('Events refreshed successfully', {
+          description: `${response.data.newEvents} new events added, ${response.data.updatedEvents} updated, ${response.data.skippedEvents} skipped`,
         });
 
-        // Invalidate eagerly so once the task finishes the page picks up
-        // the new data. The polling on /api/task will trigger a re-render
-        // of the footer; this just makes sure the cached league data
-        // gets retried.
+        // Also recalculate episode numbers to fix any ordering issues
+        try {
+          const recalcResponse = await apiClient.post(`/leagues/${id}/recalculate-episodes`);
+          if (recalcResponse.data.success && recalcResponse.data.renumberedCount > 0) {
+            toast.info('Episode numbers fixed', {
+              description: `${recalcResponse.data.renumberedCount} events renumbered`,
+            });
+          }
+        } catch (recalcError) {
+          console.error('Recalculate episodes error:', recalcError);
+          // Don't show error toast - episode recalculation is a secondary operation
+        }
+
+        // Refresh league data to show new events
         queryClient.invalidateQueries({ queryKey: ['league', id] });
         queryClient.invalidateQueries({ queryKey: ['league-events', id] });
-        queryClient.invalidateQueries({ queryKey: ['leagues'] });
+        queryClient.invalidateQueries({ queryKey: ['leagues'] }); // Update league stats
       } else {
-        toast.error('Failed to queue refresh', {
-          description: response.data.message || 'Could not queue refresh task',
+        toast.error('Failed to refresh events', {
+          description: response.data.message || 'Failed to fetch events from Sportarr',
         });
       }
-    } catch (error: unknown) {
-      // 429 cooldown gate from the backend — surface the retry-after.
-      const axiosErr = error as { response?: { status?: number; data?: { error?: string; retryAfterSeconds?: number } } };
-      if (axiosErr.response?.status === 429) {
-        toast.warning('Refresh on cooldown', {
-          description: axiosErr.response.data?.error || 'Try again shortly.',
-        });
-      } else {
-        console.error('Refresh events error:', error);
-        toast.error('Failed to queue refresh', {
-          description: 'An error occurred while queueing the refresh task.',
-        });
-      }
+    } catch (error) {
+      console.error('Refresh events error:', error);
+      toast.error('Failed to refresh events', {
+        description: 'An error occurred while fetching events. Please try again.',
+      });
     }
   };
 
@@ -1057,18 +1052,8 @@ export default function LeagueDetailPage() {
     );
   }
 
-  // Group events by season. Cancelled / postponed events are filtered out
-  // when the showCancelled toggle is off (default). The hub already excludes
-  // cancelled rows from the Plex episode-number sequence so the numbering
-  // stays correct whether the toggle is on or off -- this filter only
-  // controls the visual list.
-  const isHiddenStatus = (status: string | null | undefined): boolean => {
-    if (showCancelled) return false;
-    const s = (status || '').toUpperCase();
-    return s === 'CANCELLED' || s === 'CANCELED' || s === 'POSTPONED';
-  };
+  // Group events by season
   const groupedEvents = (events || []).reduce((acc, event) => {
-    if (isHiddenStatus(event.status)) return acc;
     const season = event.season || 'Unknown';
     if (!acc[season]) {
       acc[season] = [];
@@ -1077,19 +1062,15 @@ export default function LeagueDetailPage() {
     return acc;
   }, {} as Record<string, EventDetail[]>);
 
-  // Sort events within each season by DATE descending (newest first), with
-  // episode number only as a same-date tiebreaker. This matches the
-  // sportarr-hub browse page: events sit in chronological order regardless of
-  // whether they carry an episode number, so postponed / cancelled events
-  // (which have no episode number) are interleaved at their real date instead
-  // of being dumped at the bottom below episode 1.
+  // Sort events within each season by episode number (descending - newest first)
   Object.keys(groupedEvents).forEach(season => {
     groupedEvents[season].sort((a, b) => {
-      const dateB = new Date(b.eventDate).getTime();
-      const dateA = new Date(a.eventDate).getTime();
-      if (dateB !== dateA) return dateB - dateA;
-      // Same date: order by episode number descending as a stable tiebreaker.
-      return (b.episodeNumber ?? 0) - (a.episodeNumber ?? 0);
+      // Sort by episode number descending (highest/newest first)
+      const epA = a.episodeNumber ?? 0;
+      const epB = b.episodeNumber ?? 0;
+      if (epA !== epB) return epB - epA;
+      // Fallback to event date descending
+      return new Date(b.eventDate).getTime() - new Date(a.eventDate).getTime();
     });
   });
 
@@ -1138,23 +1119,21 @@ export default function LeagueDetailPage() {
   // Get parts for an event - uses event-specific partStatuses from API (which is event-type-aware)
   // e.g., Fight Night events only get Prelims + Main Card, PPV gets all 4 parts
   // DWCS/Contender Series: partStatuses is an empty array (no multi-part)
-  // C# nullable serialization can hand us `null` (not `undefined`) when the
-  // event hasn't had its parts computed yet (new ingests, sport-mapping
-  // gaps, etc.); guarding only on `!== undefined` let null slip through
-  // and crashed the season-expand render with "Cannot read properties of
-  // null (reading 'length')". Both helpers now treat null and undefined
-  // the same way — fall back to the default parts list.
   const getEventParts = (event: EventDetail): { name: string; label: string }[] => {
-    if (event.partStatuses != null) {
+    // If partStatuses is explicitly set (even if empty), use it
+    // Empty array = event type has no parts (e.g., DWCS)
+    if (event.partStatuses !== undefined) {
       return event.partStatuses.map((ps: PartStatus) => ({ name: ps.partName, label: ps.partName }));
     }
+    // Undefined = backward compat, use default parts
     return defaultFightCardParts;
   };
 
   // Check if event uses multi-part episodes
   // Returns false for DWCS/Contender Series (partStatuses is empty array)
   const eventHasMultiPart = (event: EventDetail): boolean => {
-    if (event.partStatuses != null && event.partStatuses.length === 0) {
+    // If partStatuses is defined and empty, event doesn't use multi-part
+    if (event.partStatuses !== undefined && event.partStatuses.length === 0) {
       return false;
     }
     return true;
@@ -1500,31 +1479,6 @@ export default function LeagueDetailPage() {
             <p className="text-gray-400 text-xs md:text-sm mt-1">
               {Array.isArray(events) ? events.length : 0} event{Array.isArray(events) && events.length !== 1 ? 's' : ''} in this league
             </p>
-
-            {/* Show-cancelled toggle. Hidden by default because cancelled
-                / postponed games are noise for the day-to-day admin --
-                they never broadcast, nothing to record. Flip on to audit. */}
-            {(() => {
-              const hiddenCount = (events || []).filter(e => {
-                const s = (e.status || '').toUpperCase();
-                return s === 'CANCELLED' || s === 'CANCELED' || s === 'POSTPONED';
-              }).length;
-              if (hiddenCount === 0) return null;
-              return (
-                <label className="inline-flex items-center gap-2 mt-2 text-xs text-gray-400 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={showCancelled}
-                    onChange={(e) => setShowCancelled(e.target.checked)}
-                    className="rounded text-red-600 focus:ring-red-500 bg-gray-800 border-gray-600"
-                  />
-                  Show cancelled / postponed
-                  <span className="text-gray-500">
-                    ({hiddenCount} hidden)
-                  </span>
-                </label>
-              );
-            })()}
           </div>
 
           {eventsLoading ? (
@@ -1807,12 +1761,6 @@ export default function LeagueDetailPage() {
                             const now = new Date();
                             const isPastEvent = eventDate < now;
                             const status = event.status?.toUpperCase();
-                            // 'cancelled' / 'postponed' get their own badge -- the previous
-                            // `isNotStarted = !isCompleted && !isLive` fallback was rendering
-                            // them as "Not Started", which is misleading: a cancelled game
-                            // never happens.
-                            const isCancelled = status === 'CANCELLED' || status === 'CANCELED';
-                            const isPostponed = status === 'POSTPONED';
                             const isCompleted = hasFile || status === 'FT' || status === 'COMPLETED' || status === 'MATCH FINISHED' || (isPastEvent && (!status || status === 'NS' || status === 'NOT STARTED'));
                             const isLive = status === 'LIVE';
                             const hasParts = config?.enableMultiPartEpisodes && isFightingSport(event.sport) && eventHasMultiPart(event);
@@ -1893,10 +1841,6 @@ export default function LeagueDetailPage() {
                                         <FilmIcon className="w-3 h-3" />
                                         {event.files && event.files.length > 1 ? `${event.files.length} Files` : 'Downloaded'}
                                       </button>
-                                    ) : isCancelled ? (
-                                      <span className="px-1.5 py-0.5 rounded bg-red-600/20 text-red-400 text-xs line-through" title="This event was cancelled and will not occur.">Cancelled</span>
-                                    ) : isPostponed ? (
-                                      <span className="px-1.5 py-0.5 rounded bg-yellow-600/20 text-yellow-400 text-xs" title="This event has been postponed.">Postponed</span>
                                     ) : !hasParts ? (
                                       <EventStatusBadge
                                         eventId={event.id}
@@ -1923,7 +1867,7 @@ export default function LeagueDetailPage() {
                                       to its content (left-aligned with the
                                       indent of the second line). */}
                                   <span className="text-xs text-gray-400 sm:w-28 sm:flex-shrink-0">
-                                    {formatEventDate(event, timezone, {
+                                    {formatDateInTimezone(eventDisplayDate(event), timezone, {
                                       month: 'short',
                                       day: 'numeric',
                                       year: 'numeric'
@@ -2174,7 +2118,7 @@ export default function LeagueDetailPage() {
                       {/* Event Details */}
                       <div className="ml-7 md:ml-10 mt-2 space-y-1">
                         <div className="flex flex-wrap items-center gap-2 md:gap-3 text-xs md:text-sm text-gray-400">
-                          <span>{formatEventDate(event, timezone, {
+                          <span>{formatDateInTimezone(eventDisplayDate(event), timezone, {
                             year: 'numeric',
                             month: 'short',
                             day: 'numeric'
@@ -2193,26 +2137,12 @@ export default function LeagueDetailPage() {
                             const now = new Date();
                             const isPast = eventDate < now;
                             const status = event.status?.toUpperCase();
-                            const isCancelled = status === 'CANCELLED' || status === 'CANCELED';
-                            const isPostponed = status === 'POSTPONED';
                             // Event is completed if: has file, OR explicit completed status, OR past date with unstarted/no status
                             const isCompleted = event.hasFile || status === 'FT' || status === 'COMPLETED' || status === 'MATCH FINISHED' || (isPast && (!status || status === 'NS' || status === 'NOT STARTED'));
                             const isLive = status === 'LIVE';
-                            const isNotStarted = !isCompleted && !isLive && !isCancelled && !isPostponed;
+                            const isNotStarted = !isCompleted && !isLive;
 
-                            if (isCancelled) {
-                              return (
-                                <span className="px-2 py-0.5 rounded bg-red-600/20 text-red-400 line-through" title="Cancelled — this event will not occur.">
-                                  Cancelled
-                                </span>
-                              );
-                            } else if (isPostponed) {
-                              return (
-                                <span className="px-2 py-0.5 rounded bg-yellow-600/20 text-yellow-400" title="Postponed — event has been delayed.">
-                                  Postponed
-                                </span>
-                              );
-                            } else if (isCompleted) {
+                            if (isCompleted) {
                               return (
                                 <span className="px-2 py-0.5 rounded bg-blue-600/20 text-blue-400">
                                   Completed

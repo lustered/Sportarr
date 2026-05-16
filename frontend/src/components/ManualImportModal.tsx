@@ -1,4 +1,4 @@
-import { formatEventDate } from '../utils/timezone';
+import { eventDisplayDate } from '../utils/timezone';
 import { useState, useEffect } from 'react';
 import {
   XMarkIcon,
@@ -722,7 +722,7 @@ export default function ManualImportModal({ pendingImport, onClose, onSuccess }:
                                   {event.title}
                                 </p>
                                 <p className="text-xs text-gray-400 mt-0.5">
-                                  {formatEventDate(event, null)}
+                                  {new Date(eventDisplayDate(event)).toLocaleDateString()}
                                   {event.season && ` • Season ${event.season}`}
                                   {event.episodeNumber && ` • Episode ${event.episodeNumber}`}
                                 </p>
