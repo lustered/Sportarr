@@ -184,28 +184,12 @@ public class ReleaseMatchingService
     public SportsParseResult ParseRelease(string releaseTitle)
         => _sportsParser.Parse(releaseTitle);
 
-    /// <summary>
-    /// Look up the per-indexer EarlyReleaseLimit (days) for a given release.
-    /// Returns null if the release has no indexer id, the lookup is missing,
-    /// or the indexer doesn't have a limit configured. Callers thread the dict
-    /// through from a single DB read per search batch.
-    /// </summary>
-    public static int? ResolveEarlyReleaseLimit(
-        ReleaseSearchResult release,
-        IReadOnlyDictionary<int, int?>? earlyReleaseLimitsByIndexer)
-    {
-        if (earlyReleaseLimitsByIndexer is null || !release.IndexerId.HasValue)
-            return null;
-        return earlyReleaseLimitsByIndexer.TryGetValue(release.IndexerId.Value, out var limit) ? limit : null;
-    }
-
     public ReleaseMatchResult ValidateRelease(
         ReleaseSearchResult release,
         Event evt,
         string? requestedPart = null,
         bool enableMultiPartEpisodes = true,
-        SportsParseResult? preParsed = null,
-        int? earlyReleaseLimitDays = null)
+        SportsParseResult? preParsed = null)
     {
         var result = new ReleaseMatchResult
         {
@@ -229,37 +213,21 @@ public class ReleaseMatchingService
             return result;
         }
 
-        // VALIDATION 0b: Pre-event scene fake. Opt-in per-indexer via
-        // Indexer.EarlyReleaseLimit (days). When set to a positive value,
-        // reject releases posted to the indexer more than that many days
-        // before the event aired — legitimate recordings of live sports
-        // can't exist before the event. Null/0/missing limit skips the
-        // check entirely so the user controls how aggressive this is.
-        //
-        // Normalise both sides to UTC instants before comparing. release.PublishDate
-        // comes off indexer feeds as DateTimeKind.Utc, but evt.EventDate is hydrated
-        // by EventDateConverter via DateTime.TryParse, which strips +00:00 offsets
-        // into DateTimeKind.Local under the container's clock. C# DateTime ordering
-        // compares raw ticks across mixed kinds without TZ conversion, so a late-
-        // Eastern event whose UTC instant rolls into the next day would compare
-        // against a UTC publishDate by raw clock-time, letting genuine pre-event
-        // scene fakes slip through (or rejecting legitimate releases) depending on
-        // which side of the timezone offset the cutoff happened to fall.
-        if (earlyReleaseLimitDays.HasValue && earlyReleaseLimitDays.Value > 0
-            && release.PublishDate != default && evt.EventDate != default)
+        // VALIDATION 0b: Pre-event scene fake. The release was posted to the
+        // indexer BEFORE the event aired, which is impossible for legitimate
+        // content. The 6h skew window allows for indexer clock drift, pre-game
+        // shows that legitimately air earlier, and time zones rounding differently
+        // when only a date is posted. Anything earlier than that is a fake.
+        // PublishDate == default(DateTime) means the indexer didn't report it -
+        // skip this check rather than rejecting everything.
+        if (release.PublishDate != default && evt.EventDate != default)
         {
-            var publishUtc = release.PublishDate.Kind == DateTimeKind.Unspecified
-                ? DateTime.SpecifyKind(release.PublishDate, DateTimeKind.Utc)
-                : release.PublishDate.ToUniversalTime();
-            var eventUtc = evt.EventDate.Kind == DateTimeKind.Unspecified
-                ? DateTime.SpecifyKind(evt.EventDate, DateTimeKind.Utc)
-                : evt.EventDate.ToUniversalTime();
-            var publishCutoff = eventUtc.AddDays(-earlyReleaseLimitDays.Value);
-            if (publishUtc < publishCutoff)
+            var publishCutoff = evt.EventDate.AddHours(-6);
+            if (release.PublishDate < publishCutoff)
             {
                 result.Confidence -= 100;
                 result.IsHardRejection = true;
-                result.Rejections.Add($"Release posted {(eventUtc - publishUtc).TotalHours:F1}h before event aired, exceeds indexer's {earlyReleaseLimitDays.Value}d early-release limit");
+                result.Rejections.Add($"Release posted {(evt.EventDate - release.PublishDate).TotalHours:F1}h before event aired (likely scene fake)");
                 // Matches the log level used by every other Hard rejection
                 // branch in this method — the rejection is the matcher
                 // doing its job, not an operator-actionable event, and
@@ -267,8 +235,8 @@ public class ReleaseMatchingService
                 // when an indexer publishes old back-catalogue content
                 // alongside fresh releases.
                 _logger.LogDebug(
-                    "[Release Matching] Hard rejection: pre-event release '{Release}' posted {PubDate} for event {EventDate} (limit {Limit}d)",
-                    release.Title, publishUtc, eventUtc, earlyReleaseLimitDays.Value);
+                    "[Release Matching] Hard rejection: pre-event release '{Release}' posted {PubDate} for event {EventDate}",
+                    release.Title, release.PublishDate, evt.EventDate);
                 return result;
             }
         }
@@ -813,16 +781,13 @@ public class ReleaseMatchingService
     /// <param name="requestedPart">Optional specific part requested</param>
     /// <param name="enableMultiPartEpisodes">Whether multi-part episodes are enabled</param>
     public List<(ReleaseSearchResult Release, ReleaseMatchResult Match)> FilterValidReleases(
-        List<ReleaseSearchResult> releases, Event evt, string? requestedPart = null, bool enableMultiPartEpisodes = true,
-        IReadOnlyDictionary<int, int?>? earlyReleaseLimitsByIndexer = null)
+        List<ReleaseSearchResult> releases, Event evt, string? requestedPart = null, bool enableMultiPartEpisodes = true)
     {
         var validReleases = new List<(ReleaseSearchResult, ReleaseMatchResult)>();
 
         foreach (var release in releases)
         {
-            var limit = ResolveEarlyReleaseLimit(release, earlyReleaseLimitsByIndexer);
-            var matchResult = ValidateRelease(release, evt, requestedPart, enableMultiPartEpisodes,
-                earlyReleaseLimitDays: limit);
+            var matchResult = ValidateRelease(release, evt, requestedPart, enableMultiPartEpisodes);
 
             if (matchResult.IsMatch)
             {
