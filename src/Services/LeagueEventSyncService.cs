@@ -41,19 +41,8 @@ public class LeagueEventSyncService
     /// sportarr.net bypasses its own cache and refetches from TheSportsDB synchronously. Use this for the
     /// user-driven blue refresh button in the UI. Defaults to false so background syncs continue to use the
     /// cheap stale-while-revalidate path that doesn't burden the upstream API key budget.</param>
-    /// <param name="onProgress">Optional callback invoked with (percentage 0-100, message) at meaningful
-    /// checkpoints during the sync — used by TaskService to write live progress onto an AppTask row so the
-    /// frontend FooterStatusBar can render the in-flight refresh next to download / search progress.</param>
-    /// <param name="cancellationToken">Used by TaskService to abort the sync mid-flight when the user cancels
-    /// the task from the UI. The async sync respects cancellation between seasons.</param>
     /// <returns>Result with counts of new, updated, and skipped events</returns>
-    public async Task<LeagueEventSyncResult> SyncLeagueEventsAsync(
-        int leagueId,
-        List<string>? seasons = null,
-        bool fullHistoricalSync = false,
-        bool forceRefresh = false,
-        Func<int, string, Task>? onProgress = null,
-        CancellationToken cancellationToken = default)
+    public async Task<LeagueEventSyncResult> SyncLeagueEventsAsync(int leagueId, List<string>? seasons = null, bool fullHistoricalSync = false, bool forceRefresh = false)
     {
         var result = new LeagueEventSyncResult { LeagueId = leagueId };
 
@@ -92,27 +81,7 @@ public class LeagueEventSyncService
         // bypassing the lookup when the league was refreshed within the
         // TTL window. force-refresh callers (the blue refresh button)
         // skip the gate entirely so a manual refresh always re-pulls.
-        if (onProgress != null)
-        {
-            await onProgress(2, $"Refreshing metadata for {league.Name}...");
-        }
         await RefreshLeagueMetadataIfStaleAsync(league, forceRefresh);
-
-        if (onProgress != null)
-        {
-            await onProgress(5, $"Migrating legacy ids for {league.Name}...");
-        }
-        // One-shot ExternalId migration for the league and its teams.
-        // Sportarr-hub flipped idLeague / idTeam from TheSportsDB ids
-        // to its own short_ids (lg-XXXXXX / tm-XXXXXX) and now ships
-        // the TheSportsDB id alongside as the auxiliary tsdbId field.
-        // Renamer rows synced before that flip still carry the
-        // TheSportsDB id in their ExternalId column, so the team
-        // filter further down (monitoredTeamIds.Contains(...)) fails
-        // and event creation links to the wrong / no Team row. This
-        // migration pass is idempotent: when ExternalId already
-        // matches the API short_id, the lookup is a no-op.
-        await MigrateLegacyExternalIdsAsync(league);
 
         // Determine current season for MonitorType filtering
         var currentSeason = DateTime.UtcNow.Year.ToString();
@@ -158,15 +127,6 @@ public class LeagueEventSyncService
             _logger.LogInformation("[League Event Sync] {Sport} sport detected - team filtering disabled (events don't have home/away teams)", league.Sport);
         }
 
-        // Authoritative season list from upstream, used by the
-        // stale-season cleanup below regardless of whether the
-        // sync loop only walks a current/future subset of it.
-        // Stays null when the caller passed an explicit seasons
-        // list (we have no full-catalog reference in that case
-        // and the stale-season cleanup must be skipped to avoid
-        // wrongly flagging the un-iterated seasons as orphan).
-        List<string>? fullHubSeasons = null;
-
         // Default to smart season fetching if no seasons specified
         // Query Sportarr API for actual available seasons instead of guessing years
         if (seasons == null || !seasons.Any())
@@ -183,7 +143,6 @@ public class LeagueEventSyncService
                     .Where(s => !string.IsNullOrEmpty(s.StrSeason))
                     .Select(s => s.StrSeason!)
                     .ToList();
-                fullHubSeasons = allSeasons.ToList();
 
                 if (fullHistoricalSync)
                 {
@@ -241,18 +200,8 @@ public class LeagueEventSyncService
         // Sync each season
         foreach (var season in seasons)
         {
-            cancellationToken.ThrowIfCancellationRequested();
             seasonIndex++;
             var seasonStartCount = result.NewCount + result.UpdatedCount;
-
-            // Per-season progress checkpoint. Maps the season index
-            // onto a 10-90 band so the early "loading league" and final
-            // "rename + cleanup" steps have room above and below.
-            if (onProgress != null)
-            {
-                var pct = 10 + (int)(80.0 * (seasonIndex - 1) / Math.Max(1, seasons.Count));
-                await onProgress(pct, $"Processing season {seasonIndex}/{seasons.Count}: {season}");
-            }
 
             _logger.LogInformation("[League Event Sync] Processing season {Current}/{Total}: {Season}",
                 seasonIndex, seasons.Count, season);
@@ -327,28 +276,11 @@ public class LeagueEventSyncService
                 }
             }
 
-            // Remove events that the API no longer returns (cancelled/deleted from schedule).
-            //
-            // Build the "do not delete" set from BOTH the new
-            // short_id (apiEvent.ExternalId) AND the TheSportsDB
-            // cross-reference (apiEvent.TsdbId) for every returned
-            // event. Legacy local rows whose ExternalId still holds
-            // the TheSportsDB id from before the hub flip must be
-            // recognised in this set or the cleanup pass below
-            // hard-deletes them on every sync until they happen to
-            // be processed by ProcessEventAsync's migration step.
-            var apiExternalIds = new HashSet<string>();
-            foreach (var ev in events)
-            {
-                if (!string.IsNullOrEmpty(ev.ExternalId))
-                {
-                    apiExternalIds.Add(ev.ExternalId);
-                }
-                if (!string.IsNullOrEmpty(ev.TsdbId))
-                {
-                    apiExternalIds.Add(ev.TsdbId);
-                }
-            }
+            // Remove events that the API no longer returns (cancelled/deleted from schedule)
+            var apiExternalIds = events
+                .Select(e => e.ExternalId)
+                .Where(id => !string.IsNullOrEmpty(id))
+                .ToHashSet();
 
             // Safety guard. The cleanup pass below hard-deletes every
             // local event whose ExternalId isn't in apiExternalIds, so
@@ -408,35 +340,14 @@ public class LeagueEventSyncService
             // doesn't know about half my season" is almost always a
             // sync regression on the upstream side, not legitimate
             // mass cancellation.
-            //
-            // Escape hatch: when the API clearly returned a healthy
-            // response (>= HEALTHY_API_THRESHOLD events for this season),
-            // we trust it as authoritative even when the orphan ratio is
-            // high. The original guard couldn't distinguish "upstream
-            // legitimately deduped" (sportarr-hub's May 2026 dedup pass
-            // removed ~2,900 duplicate MLB rows in one go) from "upstream
-            // is broken" (returned a sparse response). The threshold
-            // catches the broken case (< 100 events = clearly not a
-            // working MLB / NBA / NHL response) while letting the
-            // legitimate-dedup case proceed.
-            const int healthyApiThreshold = 100;
-            if (localEventsForSeason.Count > 0 &&
-                orphanedEvents.Count > localEventsForSeason.Count / 2 &&
-                orphanedEvents.Count >= 20 &&
-                events.Count < healthyApiThreshold)
-            {
-                _logger.LogWarning(
-                    "[League Event Sync] Season {Season}: {Orphaned}/{Local} local events appear orphaned ({ApiCount} API ids returned only {EventCount} events). Refusing cleanup — API response looks unhealthy. Investigate the upstream response before retrying.",
-                    season, orphanedEvents.Count, localEventsForSeason.Count, apiExternalIds.Count, events.Count);
-                continue;
-            }
             if (localEventsForSeason.Count > 0 &&
                 orphanedEvents.Count > localEventsForSeason.Count / 2 &&
                 orphanedEvents.Count >= 20)
             {
-                _logger.LogInformation(
-                    "[League Event Sync] Season {Season}: {Orphaned}/{Local} local events orphaned ({ApiCount} API ids returned {EventCount} events). API response is healthy (>= {Threshold} events), proceeding with cleanup -- treating upstream as authoritative.",
-                    season, orphanedEvents.Count, localEventsForSeason.Count, apiExternalIds.Count, events.Count, healthyApiThreshold);
+                _logger.LogWarning(
+                    "[League Event Sync] Season {Season}: {Orphaned}/{Local} local events appear orphaned ({ApiCount} API ids). Refusing cleanup — too large a delete to be legitimate cancellations. Investigate the upstream response before retrying.",
+                    season, orphanedEvents.Count, localEventsForSeason.Count, apiExternalIds.Count);
+                continue;
             }
 
             if (orphanedEvents.Any())
@@ -490,94 +401,9 @@ public class LeagueEventSyncService
                 season, seasonEventsProcessed, result.NewCount - seasonStartCount + result.UpdatedCount, result.UpdatedCount);
         }
 
-        // Stale-season cleanup: events tagged with a Season string the
-        // API no longer returns. The per-season loop above only walks
-        // seasons hub currently lists, so events from a season hub has
-        // since consolidated away (e.g. an old "1992-1993" sibling that
-        // hub deduped into "1992", or a "2026" orphan that hub merged
-        // into "2025-2026") sit forever in the local DB untouched.
-        //
-        // CRITICAL: compares against `fullHubSeasons` (the unfiltered
-        // upstream catalog) rather than the local `seasons` variable.
-        // In optimized refreshes `seasons` only holds current/future
-        // entries, so using it here would flag every legitimate
-        // historical season as "stale" and the halfway-threshold
-        // guard would refuse to clean anything (the original bug
-        // that left the 1-event "1992-1993" / "1991-1992" / "1990-1991"
-        // orphans visible after a daily refresh even though hub had
-        // already deduped them).
-        //
-        // Skips when the caller passed in a custom seasons list
-        // (fullHubSeasons stays null in that path) -- without the
-        // full catalog to compare against, anything outside the
-        // caller-supplied list would look stale even when it is
-        // actually a legitimate season the caller chose not to sync.
-        if (fullHubSeasons != null && fullHubSeasons.Any())
-        {
-            var hubSeasons = new HashSet<string>(fullHubSeasons, StringComparer.OrdinalIgnoreCase);
-
-            var localEventsByLeague = await _db.Events
-                .Include(e => e.Files)
-                .Where(e => e.LeagueId == league.Id && e.Season != null)
-                .ToListAsync();
-
-            var staleEvents = localEventsByLeague
-                .Where(e => !string.IsNullOrEmpty(e.Season) && !hubSeasons.Contains(e.Season!))
-                .ToList();
-
-            if (staleEvents.Any())
-            {
-                var staleSeasonCounts = staleEvents
-                    .GroupBy(e => e.Season!)
-                    .ToDictionary(g => g.Key, g => g.Count());
-
-                // Halfway threshold guard: if the events tagged with
-                // stale season strings outweigh more than half the
-                // league's footprint, something is wrong upstream
-                // (a corrupted season-list response) and a wholesale
-                // delete would destroy real data. Bail with a
-                // warning -- next refresh runs again and re-evaluates.
-                if (localEventsByLeague.Count > 0 &&
-                    staleEvents.Count > localEventsByLeague.Count / 2)
-                {
-                    _logger.LogWarning(
-                        "[League Event Sync] Stale-season cleanup: {Stale}/{Total} local events sit under {SeasonCount} season(s) the API no longer returns. Refusing cleanup -- ratio is too high to trust. Investigate the upstream season list before retrying. Stale seasons: {Seasons}",
-                        staleEvents.Count, localEventsByLeague.Count, staleSeasonCounts.Count,
-                        string.Join(", ", staleSeasonCounts.Select(kv => $"{kv.Key}={kv.Value}")));
-                }
-                else
-                {
-                    int removedFromStaleSeasons = 0;
-                    foreach (var stale in staleEvents)
-                    {
-                        if (stale.HasFile || stale.Files.Any())
-                        {
-                            _logger.LogWarning(
-                                "[League Event Sync] Removing stale-season event '{Title}' (S{Season}) which has {FileCount} file(s) on disk - files left for manual cleanup",
-                                stale.Title, stale.Season, stale.Files.Count);
-                            _db.EventFiles.RemoveRange(stale.Files);
-                        }
-                        _db.Events.Remove(stale);
-                        removedFromStaleSeasons++;
-                    }
-
-                    result.RemovedCount += removedFromStaleSeasons;
-                    _logger.LogInformation(
-                        "[League Event Sync] Stale-season cleanup: removed {Count} event(s) across {SeasonCount} season(s) no longer in API: {Seasons}",
-                        removedFromStaleSeasons, staleSeasonCounts.Count,
-                        string.Join(", ", staleSeasonCounts.Select(kv => $"{kv.Key}={kv.Value}")));
-                }
-            }
-        }
-
         // Update league's last sync timestamp
         league.LastUpdate = DateTime.UtcNow;
         await _db.SaveChangesAsync();
-
-        if (onProgress != null)
-        {
-            await onProgress(92, $"Renumbering + renaming files for {league.Name}...");
-        }
 
         // Process all synced seasons - recalculate episode numbers and rename files to match current naming format
         // This ensures all files have correct episode numbers and follow the standard event format
@@ -652,144 +478,6 @@ public class LeagueEventSyncService
     /// Refresh a league's metadata fields from upstream when the cached
     /// snapshot is older than the TTL (or has never been refreshed).
     /// Mutates the entity in place and saves. Failure to refresh is
-    /// <summary>
-    /// One-shot ExternalId migration for the league and its teams.
-    ///
-    /// Sportarr-hub used to wire idLeague / idTeam / idEvent to
-    /// TheSportsDB ids. As of the short_id-primary flip those fields
-    /// now carry the hub's own short_ids (lg-XXXXXX / tm-XXXXXX /
-    /// ev-XXXXXX) and the TheSportsDB id rides alongside in tsdbId.
-    /// Renamer rows persisted before the flip still hold TheSportsDB
-    /// ids in their ExternalId column, which means:
-    ///   * GetLeagueTeamsAsync's response (keyed by short_id) doesn't
-    ///     match local Team rows on the first sync after the flip,
-    ///     so new event creation runs FirstOrDefault(t.ExternalId ==
-    ///     apiHomeTeamExternalId) → null and HomeTeamId never gets
-    ///     populated.
-    ///   * monitoredTeamIds (built from local Team.ExternalId) never
-    ///     intersects e.HomeTeamExternalId (built from the API
-    ///     response), so the team filter rejects every event.
-    ///
-    /// This pass calls the league + team lookups once at the top of
-    /// every league sync, finds local rows whose ExternalId matches
-    /// the response's tsdbId, and rewrites them to the response's
-    /// new short_id ExternalId. Idempotent — local rows already on
-    /// short_ids skip silently.
-    ///
-    /// Network cost is one extra lookup-by-league + one list-teams
-    /// call per sync. Both responses are server-cached upstream, so
-    /// the steady-state overhead is small; the win is that one
-    /// refresh fully migrates a league and the cost falls to zero
-    /// afterwards.
-    /// </summary>
-    private async Task MigrateLegacyExternalIdsAsync(League league)
-    {
-        if (string.IsNullOrEmpty(league.ExternalId)) return;
-
-        // 1) Migrate the League row itself.
-        try
-        {
-            var apiLeague = await _sportarrApiClient.LookupLeagueAsync(league.ExternalId);
-            if (apiLeague != null &&
-                !string.IsNullOrEmpty(apiLeague.ExternalId) &&
-                !string.IsNullOrEmpty(apiLeague.TsdbId) &&
-                apiLeague.TsdbId == league.ExternalId &&
-                apiLeague.ExternalId != league.ExternalId)
-            {
-                _logger.LogInformation(
-                    "[League Event Sync] Migrating League ExternalId for '{Name}': {OldId} -> {NewId}",
-                    league.Name, league.ExternalId, apiLeague.ExternalId);
-                league.ExternalId = apiLeague.ExternalId;
-                await _db.SaveChangesAsync();
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "[League Event Sync] Could not migrate League.ExternalId for {LeagueName}; continuing with current id",
-                league.Name);
-        }
-
-        // 2) Migrate Team rows + the HomeTeamExternalId / AwayTeamExternalId
-        //    columns on existing Event rows for this league. Teamless
-        //    sports skip — no team rows to update.
-        if (LeagueSportRules.IsTeamlessSport(league.Sport, league.Name)) return;
-
-        List<Team>? apiTeams;
-        try
-        {
-            apiTeams = await _sportarrApiClient.GetLeagueTeamsAsync(league.ExternalId);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex,
-                "[League Event Sync] Could not load teams for {LeagueName} during ExternalId migration; continuing",
-                league.Name);
-            return;
-        }
-        if (apiTeams == null || apiTeams.Count == 0) return;
-
-        var tsdbToShort = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var t in apiTeams)
-        {
-            if (!string.IsNullOrEmpty(t.TsdbId) &&
-                !string.IsNullOrEmpty(t.ExternalId) &&
-                t.TsdbId != t.ExternalId)
-            {
-                tsdbToShort[t.TsdbId!] = t.ExternalId!;
-            }
-        }
-        if (tsdbToShort.Count == 0) return;
-
-        // EF Core only translates Contains() over a concrete List / array,
-        // not over Dictionary.Keys, so project the keys to a List once and
-        // reuse it for both the team and event queries.
-        var tsdbKeys = tsdbToShort.Keys.ToList();
-
-        // Update local Team rows whose ExternalId still holds a TheSportsDB id.
-        var teamsToMigrate = await _db.Teams
-            .Where(t => t.ExternalId != null && tsdbKeys.Contains(t.ExternalId))
-            .ToListAsync();
-        foreach (var team in teamsToMigrate)
-        {
-            var newId = tsdbToShort[team.ExternalId!];
-            _logger.LogInformation(
-                "[League Event Sync] Migrating Team ExternalId for '{Name}': {OldId} -> {NewId}",
-                team.Name, team.ExternalId, newId);
-            team.ExternalId = newId;
-        }
-
-        // Update Event rows' HomeTeamExternalId / AwayTeamExternalId for
-        // this league. Without this, a legacy event row continues to
-        // carry the TheSportsDB team id and the per-event team filter
-        // mismatches even after the Team row itself is migrated.
-        var eventsToMigrate = await _db.Events
-            .Where(e => e.LeagueId == league.Id &&
-                ((e.HomeTeamExternalId != null && tsdbKeys.Contains(e.HomeTeamExternalId)) ||
-                 (e.AwayTeamExternalId != null && tsdbKeys.Contains(e.AwayTeamExternalId))))
-            .ToListAsync();
-        foreach (var evt in eventsToMigrate)
-        {
-            if (evt.HomeTeamExternalId != null && tsdbToShort.TryGetValue(evt.HomeTeamExternalId, out var newHome))
-            {
-                evt.HomeTeamExternalId = newHome;
-            }
-            if (evt.AwayTeamExternalId != null && tsdbToShort.TryGetValue(evt.AwayTeamExternalId, out var newAway))
-            {
-                evt.AwayTeamExternalId = newAway;
-            }
-        }
-
-        if (teamsToMigrate.Count > 0 || eventsToMigrate.Count > 0)
-        {
-            await _db.SaveChangesAsync();
-            _logger.LogInformation(
-                "[League Event Sync] Migrated {TeamCount} Team rows and {EventCount} Event rows from TheSportsDB ids to hub short_ids in '{LeagueName}'",
-                teamsToMigrate.Count, eventsToMigrate.Count, league.Name);
-        }
-    }
-
-    /// <summary>
     /// logged at Warning but never breaks event sync — the caller
     /// continues with whatever metadata it already has.
     /// </summary>
@@ -797,29 +485,17 @@ public class LeagueEventSyncService
     {
         if (string.IsNullOrEmpty(league.ExternalId)) return;
 
-        // The TTL gate that used to short-circuit this method when
-        // MetadataLastSyncedAt was within the past 7 days has been
-        // removed. The hub is the authoritative cache and its image
-        // URLs carry a `?v={generation}-{hash}` query string that
-        // changes whenever the underlying bytes change, so asking the
-        // hub on every sync is cheap: when nothing has changed the
-        // local LogoUrl / BannerUrl / PosterUrl / etc. are overwritten
-        // with the same string they already held and the browser
-        // continues to use its cached image. When something has
-        // changed (a new primary image was set on the hub, an upload
-        // landed, an admin replaced the artwork) the URL is different,
-        // sportarr writes the new URL, and the browser refetches on
-        // its own. Running the lookup unconditionally keeps logos,
-        // badges, posters, and descriptions in sync with the hub on
-        // exactly the same cadence as events and seasons -- the user-
-        // facing refresh button (and the background auto-sync) now
-        // updates artwork like everything else, without needing a
-        // "force refresh" toggle.
-        //
-        // MetadataLastSyncedAt is still written below so the field
-        // remains queryable for "when did we last hear from upstream"
-        // diagnostics, just not consulted as a gate.
         var lastSync = league.MetadataLastSyncedAt;
+        var isStale = lastSync == null || (DateTime.UtcNow - lastSync.Value) >= _leagueMetadataTtl;
+        if (!forceRefresh && !isStale)
+        {
+            _logger.LogDebug(
+                "[League Event Sync] Skipping metadata refresh for {LeagueName}: last sync {Hours}h ago, TTL {TtlHours}h",
+                league.Name,
+                lastSync.HasValue ? (DateTime.UtcNow - lastSync.Value).TotalHours : 0,
+                _leagueMetadataTtl.TotalHours);
+            return;
+        }
 
         try
         {
@@ -876,39 +552,9 @@ public class LeagueEventSyncService
     /// <param name="apiEpisodeMap">Episode numbers from sportarr.net API (ExternalId -> EpisodeNumber). If null, falls back to local calculation.</param>
     private async Task ProcessEventAsync(Event apiEvent, League league, LeagueEventSyncResult result, string currentSeason, Dictionary<string, int>? apiEpisodeMap = null)
     {
-        // Two-pass match against the local Events table.
-        //
-        // Hub flipped its wire-primary identifier from the TheSportsDB
-        // external id to its own short_id (ev-XXXXXX) in May 2026.
-        // Fresh syncs land with apiEvent.ExternalId = short_id, and
-        // newly-created local rows persist that short_id as ExternalId.
-        // Legacy rows synced before the flip still carry the
-        // TheSportsDB id in their ExternalId column.
-        //
-        // Step 1: look up by short_id. New + already-migrated rows
-        //         match here on the first attempt.
-        // Step 2: if no match AND the response carries a tsdbId
-        //         auxiliary field, retry against that. Catches legacy
-        //         rows mid-migration.
-        // Step 3: when the fallback match succeeds, rewrite the local
-        //         ExternalId to the short_id so the next sync matches
-        //         on the primary path directly. One-time per row.
+        // Check if event already exists by ExternalId
         var existingEvent = await _db.Events
             .FirstOrDefaultAsync(e => e.ExternalId == apiEvent.ExternalId);
-
-        if (existingEvent == null && !string.IsNullOrEmpty(apiEvent.TsdbId))
-        {
-            existingEvent = await _db.Events
-                .FirstOrDefaultAsync(e => e.ExternalId == apiEvent.TsdbId);
-
-            if (existingEvent != null && !string.IsNullOrEmpty(apiEvent.ExternalId))
-            {
-                _logger.LogInformation(
-                    "[League Event Sync] Migrating event ExternalId from TheSportsDB id {OldId} to hub short_id {NewId} ('{Title}')",
-                    apiEvent.TsdbId, apiEvent.ExternalId, apiEvent.Title);
-                existingEvent.ExternalId = apiEvent.ExternalId;
-            }
-        }
 
         if (existingEvent != null)
         {
@@ -942,34 +588,6 @@ public class LeagueEventSyncService
                 {
                     _seasonsNeedingRenumber.Add((league.Id, apiEvent.Season));
                 }
-            }
-
-            // Realign any not-yet-started recording to the current event
-            // time, regardless of whether this sync was the one that
-            // changed the time. The invariant is ScheduledStart ==
-            // EventDate; we check on every sync so a recording that
-            // drifted in a previous build (e.g. an earlier sync corrected
-            // EventDate but didn't update the recording row) gets
-            // repaired the next time the league refreshes. The shift
-            // preserves the original duration (ScheduledEnd - ScheduledStart)
-            // and the user's PrePadding / PostPadding exactly. Only rows
-            // in Scheduled status are touched, never live or historical.
-            var scheduledRecordings = await _db.DvrRecordings
-                .Where(r => r.EventId == existingEvent.Id
-                            && r.Status == DvrRecordingStatus.Scheduled)
-                .ToListAsync();
-            foreach (var rec in scheduledRecordings)
-            {
-                if (rec.ScheduledStart == existingEvent.EventDate)
-                {
-                    continue;
-                }
-                var drift = existingEvent.EventDate - rec.ScheduledStart;
-                rec.ScheduledStart = existingEvent.EventDate;
-                rec.ScheduledEnd += drift;
-                _logger.LogInformation(
-                    "[League Event Sync] Realigned scheduled recording {RecordingId} for '{EventTitle}' to event time (drift was {Drift})",
-                    rec.Id, apiEvent.Title, drift);
             }
 
             // Broadcast date (separate from EventDate UTC). Backfills existing
@@ -1090,17 +708,12 @@ public class LeagueEventSyncService
                 needsUpdate = true;
             }
 
-            // Get episode number from API (matches Plex metadata) or fall back to local calculation.
-            // Postponed/cancelled events resolve to null (no episode index), matching the hub.
+            // Get episode number from API (matches Plex metadata) or fall back to local calculation
             var correctEpisodeNumber = GetEpisodeNumberFromApiOrCalculate(
-                apiEpisodeMap, existingEvent.ExternalId, league.Id, apiEvent.Season, existingEvent.EventDate, apiEvent.Status);
+                apiEpisodeMap, existingEvent.ExternalId, league.Id, apiEvent.Season, existingEvent.EventDate);
 
-            // Update episode number whenever it differs from the freshly
-            // computed value. A plain inequality handles every case including
-            // nullable: missing->numbered, numbered->different, and
-            // numbered->null (postponed/cancelled now clears its stale index).
-            // null->null is equal, so already-cleared events don't churn.
-            if (existingEvent.EpisodeNumber != correctEpisodeNumber)
+            // Update episode number if missing or if it differs from the API
+            if (!existingEvent.EpisodeNumber.HasValue || existingEvent.EpisodeNumber != correctEpisodeNumber)
             {
                 var oldEpisodeNumber = existingEvent.EpisodeNumber;
                 existingEvent.EpisodeNumber = correctEpisodeNumber;
@@ -1189,10 +802,9 @@ public class LeagueEventSyncService
 
             Season = apiEvent.Season,
             SeasonNumber = ParseSeasonNumber(apiEvent.Season),
-            // Use API episode number (matches Plex metadata) or fall back to local calculation.
-            // Postponed/cancelled events resolve to null (no episode index), matching the hub.
+            // Use API episode number (matches Plex metadata) or fall back to local calculation
             EpisodeNumber = GetEpisodeNumberFromApiOrCalculate(
-                apiEpisodeMap, apiEvent.ExternalId, league.Id, apiEvent.Season, apiEvent.EventDate, apiEvent.Status),
+                apiEpisodeMap, apiEvent.ExternalId, league.Id, apiEvent.Season, apiEvent.EventDate),
             Round = apiEvent.Round,
             EventDate = apiEvent.EventDate,
             BroadcastDate = apiEvent.BroadcastDate,
@@ -1404,27 +1016,13 @@ public class LeagueEventSyncService
     /// <param name="season">Season string for fallback calculation</param>
     /// <param name="eventDate">Event date for fallback calculation</param>
     /// <returns>Episode number from API if available, otherwise locally calculated</returns>
-    private int? GetEpisodeNumberFromApiOrCalculate(
+    private int GetEpisodeNumberFromApiOrCalculate(
         Dictionary<string, int>? apiEpisodeMap,
         string? externalId,
         int leagueId,
         string? season,
-        DateTime eventDate,
-        string? status)
+        DateTime eventDate)
     {
-        // Postponed / cancelled events get NO episode number. Neither airs on
-        // its scheduled date, so assigning one (a) shows a bogus S..E.. badge
-        // and (b) the descending-episode sort floats them above the real
-        // games. sportarr-hub already omits them from its Plex/Emby/Jellyfin
-        // episode sequence (apiEpisodeMap won't contain them); without this
-        // guard the local fallback below would invent a number for them.
-        // Returns null so the column is cleared; the event still appears in
-        // the season list (behind the showCancelled toggle) just unnumbered.
-        if (IsUnnumberedStatus(status))
-        {
-            return null;
-        }
-
         // Try to get episode number from API first (preferred - matches Plex metadata)
         if (apiEpisodeMap != null && !string.IsNullOrEmpty(externalId) && apiEpisodeMap.TryGetValue(externalId, out var apiEpisodeNumber))
         {
@@ -1433,79 +1031,23 @@ public class LeagueEventSyncService
             return apiEpisodeNumber;
         }
 
-        // Fall back to local calculation (for events not in API, or if API
-        // fetch failed). The previous version counted rows with
-        // `(EventDate < eventDate || (EventDate == eventDate && Compare(ExternalId) < 0))`,
-        // but when the incoming event's externalId is null OR many same-date
-        // events share an identical (date, externalId) tuple at midnight
-        // (date-only parse with no time), the inner branch was never true and
-        // every collision-set event got the same `existingCount + 1` number.
-        // Visible symptom: every game on 2026-09-05 + 2026-09-06 in the MLB
-        // league page rendered as S2026E4045.
-        //
-        // Fix: pull the existing IDs in (EventDate, ExternalId, Id) order and
-        // find the deterministic position the incoming event would occupy.
-        // Id (the local PK) is the final tiebreaker so even rows with NULL
-        // ExternalId get a unique slot. Cheap on a single season since the
-        // dataset is at most a few thousand rows.
+        // Fall back to local calculation (for events not in API, or if API fetch failed)
+        // Note: This uses a synchronous count since we're in a non-async context
+        // For new events without API data, use a simple sequential number based on existing count
         if (string.IsNullOrEmpty(season))
             return 1;
 
-        // Exclude postponed / cancelled events from the position count so the
-        // surviving games stay densely numbered (E1..En with no gaps) and the
-        // fallback matches the hub's API numbering, which also omits them.
-        var seasonEventKeys = _db.Events
-            .Where(e => e.LeagueId == leagueId && e.Season == season
-                        && e.Status != "Postponed" && e.Status != "postponed"
-                        && e.Status != "Cancelled" && e.Status != "cancelled"
-                        && e.Status != "Canceled" && e.Status != "canceled")
-            .OrderBy(e => e.EventDate)
-            .ThenBy(e => e.ExternalId)
-            .ThenBy(e => e.Id)
-            .Select(e => new { e.EventDate, e.ExternalId, e.Id })
-            .ToList();
+        var existingCount = _db.Events
+            .Where(e => e.LeagueId == leagueId && e.Season == season &&
+                       (e.EventDate < eventDate ||
+                        (e.EventDate == eventDate && externalId != null &&
+                         string.Compare(e.ExternalId, externalId) < 0)))
+            .Count();
 
-        int position = 0;
-        foreach (var k in seasonEventKeys)
-        {
-            if (k.EventDate < eventDate)
-            {
-                position++;
-                continue;
-            }
-            if (k.EventDate > eventDate)
-                break;
-            // Same EventDate -- compare ExternalId, then fall back so each row
-            // still gets a unique slot when externalId is null on either side.
-            var cmp = string.Compare(k.ExternalId ?? string.Empty, externalId ?? string.Empty, StringComparison.Ordinal);
-            if (cmp < 0)
-            {
-                position++;
-                continue;
-            }
-            // cmp == 0 (same externalId, including both null) or cmp > 0:
-            // the incoming event lands here or earlier.
-            break;
-        }
-
-        var localEpisodeNumber = position + 1;
+        var localEpisodeNumber = existingCount + 1;
         _logger.LogDebug("[League Event Sync] Using local episode number E{EpisodeNumber} for event {ExternalId} (API data not available)",
             localEpisodeNumber, externalId);
         return localEpisodeNumber;
-    }
-
-    /// <summary>
-    /// Events with these statuses are excluded from episode numbering — they
-    /// don't air on their scheduled date, so they get no S..E.. index (matching
-    /// sportarr-hub). Case-insensitive: the hub emits lowercase, the local DB
-    /// has historically stored Title-case.
-    /// </summary>
-    private static bool IsUnnumberedStatus(string? status)
-    {
-        if (string.IsNullOrWhiteSpace(status)) return false;
-        return status.Equals("Postponed", StringComparison.OrdinalIgnoreCase)
-            || status.Equals("Cancelled", StringComparison.OrdinalIgnoreCase)
-            || status.Equals("Canceled", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
