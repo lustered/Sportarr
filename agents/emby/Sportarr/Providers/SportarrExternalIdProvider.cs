@@ -27,7 +27,7 @@ namespace Sportarr.Providers
         /// Gets the URL format string for linking out to the ID. The "{0}" placeholder
         /// is replaced with the stored Sportarr ID to produce a clickable link.
         /// </summary>
-        public string UrlFormatString => "https://sportarr.net/api/metadata/agents/series/{0}";
+        public string UrlFormatString => $"{SportarrPlugin.Instance?.Options.txtApiUrl ?? "https://sportarr.net"}/api/metadata/agents/series/{{0}}";
 
         /// <summary>
         /// Determines whether this external ID applies to the given item.
@@ -60,7 +60,7 @@ namespace Sportarr.Providers
         /// Gets the URL format string for linking out to the ID. The "{0}" placeholder
         /// is replaced with the stored Sportarr ID to produce a clickable link.
         /// </summary>
-        public string UrlFormatString => "https://sportarr.net/api/metadata/agents/episode/{0}";
+        public string UrlFormatString => $"{SportarrPlugin.Instance?.Options.txtApiUrl ?? "https://sportarr.net"}/api/metadata/agents/episode/{{0}}";
 
         /// <summary>
         /// Determines whether this external ID applies to the given item.

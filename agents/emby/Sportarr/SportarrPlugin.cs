@@ -19,10 +19,18 @@ namespace Sportarr
         /// <param name="logManager">The log manager.</param>
         public SportarrPlugin(IApplicationHost applicationHost, ILogManager logManager) : base(applicationHost)
         {
+            Instance = this;
             this.logger = logManager.GetLogger(this.Name);
             this.logger.Info("Plugin ({0}) is getting loaded", this.Name);
             SportarrPluginOptions.Logger = logger;
         }
+
+        /// <summary>
+        /// Gets the plugin instance, for components (e.g. IExternalId providers)
+        /// that are not created through the plugin's service root and so cannot
+        /// reach configuration via the usual CommonBase path.
+        /// </summary>
+        public static SportarrPlugin? Instance { get; private set; }
 
         /// <summary>
         /// Sets the plugin name.

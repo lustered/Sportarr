@@ -7,12 +7,26 @@
 # Settings -> Metadata Agents -> Add Provider -> https://sportarr.net/plex
 #
 
-SPORTARR_API_URL = 'https://sportarr.net'
+DEFAULT_API_URL = 'https://sportarr.net'
+
+
+def get_api_url():
+    # Read the configured Sportarr API URL from plugin prefs so users can
+    # point the agent at a local Sportarr instance instead of sportarr.net.
+    # Prefs is only available after the framework loads, so this is read at
+    # call time rather than at import.
+    try:
+        configured = Prefs['api_url']
+        if configured:
+            return configured.rstrip('/')
+    except Exception:
+        pass
+    return DEFAULT_API_URL
 
 
 def Start():
     Log.Info("[Sportarr-Legacy] Agent starting...")
-    Log.Info("[Sportarr-Legacy] API URL: %s" % SPORTARR_API_URL)
+    Log.Info("[Sportarr-Legacy] API URL: %s" % get_api_url())
     Log.Info("[Sportarr-Legacy] Note: For Plex 1.43.0+, consider using the new Custom Metadata Provider")
     # No bundle-level HTTP cache. Sportarr-hub is the source of truth for
     # episode lists, titles, and posters; cancellations, merges, and
@@ -34,7 +48,7 @@ class SportarrAgent(Agent.TV_Shows):
 
         try:
             search_url = "%s/api/metadata/agents/search?title=%s" % (
-                SPORTARR_API_URL,
+                get_api_url(),
                 String.Quote(media.show, usePlus=True)
             )
 
@@ -74,7 +88,7 @@ class SportarrAgent(Agent.TV_Shows):
         Log.Info("[Sportarr-Legacy] Updating metadata for ID: %s" % metadata.id)
 
         try:
-            series_url = "%s/api/metadata/agents/series/%s" % (SPORTARR_API_URL, metadata.id)
+            series_url = "%s/api/metadata/agents/series/%s" % (get_api_url(), metadata.id)
             Log.Debug("[Sportarr-Legacy] Series URL: %s" % series_url)
             series = JSON.ObjectFromURL(series_url, cacheTime=0)
 
@@ -120,7 +134,7 @@ class SportarrAgent(Agent.TV_Shows):
                     except Exception as e:
                         Log.Warn("[Sportarr-Legacy] Failed to fetch fanart: %s" % e)
 
-            seasons_url = "%s/api/metadata/agents/series/%s/seasons" % (SPORTARR_API_URL, metadata.id)
+            seasons_url = "%s/api/metadata/agents/series/%s/seasons" % (get_api_url(), metadata.id)
             Log.Debug("[Sportarr-Legacy] Seasons URL: %s" % seasons_url)
             seasons_response = JSON.ObjectFromURL(seasons_url, cacheTime=0)
 
@@ -150,7 +164,7 @@ class SportarrAgent(Agent.TV_Shows):
 
         try:
             episodes_url = "%s/api/metadata/agents/series/%s/season/%s/episodes" % (
-                SPORTARR_API_URL, metadata.id, season_num
+                get_api_url(), metadata.id, season_num
             )
             Log.Debug("[Sportarr-Legacy] Episodes URL: %s" % episodes_url)
             episodes_response = JSON.ObjectFromURL(episodes_url, cacheTime=0)
