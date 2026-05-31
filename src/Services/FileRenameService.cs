@@ -59,10 +59,19 @@ public class FileRenameService
         // (e.g., Q1 at 03:50, Sprint at 08:00) are ordered by their actual start time.
         // ExternalId is used as a stable tiebreaker only for events at the exact same DateTime.
         // IMPORTANT: Must include League for proper {Series} token resolution in file naming
+        // Exclude postponed / cancelled events from renumbering: they don't
+        // air on their scheduled date, carry no episode index, and the hub
+        // omits them from its API episode map. Leaving them out keeps the
+        // surviving games gap-free and in lockstep with the main sync path
+        // and sportarr-hub. Case-insensitive guard mirrors IsUnnumberedStatus
+        // in LeagueEventSyncService (DB has both Title-case and lowercase).
         var events = await _db.Events
             .Include(e => e.League)
             .Include(e => e.Files)
-            .Where(e => e.LeagueId == leagueId && e.Season == season)
+            .Where(e => e.LeagueId == leagueId && e.Season == season
+                        && e.Status != "Postponed" && e.Status != "postponed"
+                        && e.Status != "Cancelled" && e.Status != "cancelled"
+                        && e.Status != "Canceled" && e.Status != "canceled")
             .OrderBy(e => e.EventDate)
             .ThenBy(e => e.ExternalId)
             .ToListAsync();

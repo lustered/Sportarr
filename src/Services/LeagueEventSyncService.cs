@@ -1090,12 +1090,17 @@ public class LeagueEventSyncService
                 needsUpdate = true;
             }
 
-            // Get episode number from API (matches Plex metadata) or fall back to local calculation
+            // Get episode number from API (matches Plex metadata) or fall back to local calculation.
+            // Postponed/cancelled events resolve to null (no episode index), matching the hub.
             var correctEpisodeNumber = GetEpisodeNumberFromApiOrCalculate(
-                apiEpisodeMap, existingEvent.ExternalId, league.Id, apiEvent.Season, existingEvent.EventDate);
+                apiEpisodeMap, existingEvent.ExternalId, league.Id, apiEvent.Season, existingEvent.EventDate, apiEvent.Status);
 
-            // Update episode number if missing or if it differs from the API
-            if (!existingEvent.EpisodeNumber.HasValue || existingEvent.EpisodeNumber != correctEpisodeNumber)
+            // Update episode number whenever it differs from the freshly
+            // computed value. A plain inequality handles every case including
+            // nullable: missing->numbered, numbered->different, and
+            // numbered->null (postponed/cancelled now clears its stale index).
+            // null->null is equal, so already-cleared events don't churn.
+            if (existingEvent.EpisodeNumber != correctEpisodeNumber)
             {
                 var oldEpisodeNumber = existingEvent.EpisodeNumber;
                 existingEvent.EpisodeNumber = correctEpisodeNumber;
@@ -1184,9 +1189,10 @@ public class LeagueEventSyncService
 
             Season = apiEvent.Season,
             SeasonNumber = ParseSeasonNumber(apiEvent.Season),
-            // Use API episode number (matches Plex metadata) or fall back to local calculation
+            // Use API episode number (matches Plex metadata) or fall back to local calculation.
+            // Postponed/cancelled events resolve to null (no episode index), matching the hub.
             EpisodeNumber = GetEpisodeNumberFromApiOrCalculate(
-                apiEpisodeMap, apiEvent.ExternalId, league.Id, apiEvent.Season, apiEvent.EventDate),
+                apiEpisodeMap, apiEvent.ExternalId, league.Id, apiEvent.Season, apiEvent.EventDate, apiEvent.Status),
             Round = apiEvent.Round,
             EventDate = apiEvent.EventDate,
             BroadcastDate = apiEvent.BroadcastDate,
@@ -1398,13 +1404,27 @@ public class LeagueEventSyncService
     /// <param name="season">Season string for fallback calculation</param>
     /// <param name="eventDate">Event date for fallback calculation</param>
     /// <returns>Episode number from API if available, otherwise locally calculated</returns>
-    private int GetEpisodeNumberFromApiOrCalculate(
+    private int? GetEpisodeNumberFromApiOrCalculate(
         Dictionary<string, int>? apiEpisodeMap,
         string? externalId,
         int leagueId,
         string? season,
-        DateTime eventDate)
+        DateTime eventDate,
+        string? status)
     {
+        // Postponed / cancelled events get NO episode number. Neither airs on
+        // its scheduled date, so assigning one (a) shows a bogus S..E.. badge
+        // and (b) the descending-episode sort floats them above the real
+        // games. sportarr-hub already omits them from its Plex/Emby/Jellyfin
+        // episode sequence (apiEpisodeMap won't contain them); without this
+        // guard the local fallback below would invent a number for them.
+        // Returns null so the column is cleared; the event still appears in
+        // the season list (behind the showCancelled toggle) just unnumbered.
+        if (IsUnnumberedStatus(status))
+        {
+            return null;
+        }
+
         // Try to get episode number from API first (preferred - matches Plex metadata)
         if (apiEpisodeMap != null && !string.IsNullOrEmpty(externalId) && apiEpisodeMap.TryGetValue(externalId, out var apiEpisodeNumber))
         {
@@ -1431,8 +1451,14 @@ public class LeagueEventSyncService
         if (string.IsNullOrEmpty(season))
             return 1;
 
+        // Exclude postponed / cancelled events from the position count so the
+        // surviving games stay densely numbered (E1..En with no gaps) and the
+        // fallback matches the hub's API numbering, which also omits them.
         var seasonEventKeys = _db.Events
-            .Where(e => e.LeagueId == leagueId && e.Season == season)
+            .Where(e => e.LeagueId == leagueId && e.Season == season
+                        && e.Status != "Postponed" && e.Status != "postponed"
+                        && e.Status != "Cancelled" && e.Status != "cancelled"
+                        && e.Status != "Canceled" && e.Status != "canceled")
             .OrderBy(e => e.EventDate)
             .ThenBy(e => e.ExternalId)
             .ThenBy(e => e.Id)
@@ -1466,6 +1492,20 @@ public class LeagueEventSyncService
         _logger.LogDebug("[League Event Sync] Using local episode number E{EpisodeNumber} for event {ExternalId} (API data not available)",
             localEpisodeNumber, externalId);
         return localEpisodeNumber;
+    }
+
+    /// <summary>
+    /// Events with these statuses are excluded from episode numbering — they
+    /// don't air on their scheduled date, so they get no S..E.. index (matching
+    /// sportarr-hub). Case-insensitive: the hub emits lowercase, the local DB
+    /// has historically stored Title-case.
+    /// </summary>
+    private static bool IsUnnumberedStatus(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status)) return false;
+        return status.Equals("Postponed", StringComparison.OrdinalIgnoreCase)
+            || status.Equals("Cancelled", StringComparison.OrdinalIgnoreCase)
+            || status.Equals("Canceled", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
