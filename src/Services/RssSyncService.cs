@@ -139,7 +139,12 @@ public class RssSyncService : BackgroundService
             .ThenInclude(l => l!.RootFolder)
             .Include(e => e.HomeTeam)
             .Include(e => e.AwayTeam)
-            .Where(e => e.Monitored && e.League != null && e.EventDate <= nowUtc)
+            // Postponed / cancelled events never produce releases and aren't
+            // missing — exclude them so RSS matching never targets them.
+            .Where(e => e.Monitored && e.League != null && e.EventDate <= nowUtc
+                && e.Status != "Postponed" && e.Status != "postponed"
+                && e.Status != "Cancelled" && e.Status != "cancelled"
+                && e.Status != "Canceled" && e.Status != "canceled")
             .ToListAsync(cancellationToken);
 
         if (!monitoredEvents.Any())

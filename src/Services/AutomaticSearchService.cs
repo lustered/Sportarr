@@ -131,6 +131,16 @@ public class AutomaticSearchService : IAutomaticSearchService
                     return result;
                 }
 
+                // Postponed / cancelled events never appear in indexer results
+                // and aren't missing — never search for them automatically.
+                if (IsUnsearchableStatus(evt.Status))
+                {
+                    result.Success = false;
+                    result.Message = $"Event is {evt.Status?.ToLowerInvariant()} (skipped by automatic search)";
+                    _logger.LogInformation("[{SearchType}] Skipping {Status} event: {Title}", searchType, evt.Status, evt.Title);
+                    return result;
+                }
+
                 // If event IS monitored, we proceed regardless of league status
                 // This allows users to manually monitor specific events even when no teams are selected
                 if (evt.League != null && !evt.League.Monitored)
@@ -1172,10 +1182,18 @@ public class AutomaticSearchService : IAutomaticSearchService
         // Get all monitored events from monitored leagues only
         // Both the event AND the league must be monitored for automatic background search
         // Include Files to check which parts are already downloaded
+        // Postponed / cancelled events are never searched: they won't appear in
+        // indexer results and aren't "missing" — they simply will not happen on
+        // their scheduled date. Excluding them here keeps the background search
+        // from endlessly querying for media that cannot exist. (DB stores both
+        // Title-case and lowercase status; guard both.)
         var events = await _db.Events
             .Include(e => e.League)
             .Include(e => e.Files)
-            .Where(e => e.Monitored && e.League != null && e.League.Monitored)
+            .Where(e => e.Monitored && e.League != null && e.League.Monitored
+                && e.Status != "Postponed" && e.Status != "postponed"
+                && e.Status != "Cancelled" && e.Status != "cancelled"
+                && e.Status != "Canceled" && e.Status != "canceled")
             .ToListAsync();
 
         _logger.LogInformation("[Automatic Search] Found {Count} monitored events (from monitored leagues) to search", events.Count);
@@ -1462,6 +1480,19 @@ public class AutomaticSearchService : IAutomaticSearchService
     /// Get quality score for a cutoff quality index from the profile.
     /// Looks up the quality name by index, then uses deterministic scoring.
     /// </summary>
+    /// <summary>
+    /// Postponed / cancelled events must never be searched — they won't appear
+    /// in indexer results and aren't "missing". Case-insensitive because the DB
+    /// stores both Title-case (local) and lowercase (hub) status strings.
+    /// </summary>
+    private static bool IsUnsearchableStatus(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status)) return false;
+        return status.Equals("Postponed", StringComparison.OrdinalIgnoreCase)
+            || status.Equals("Cancelled", StringComparison.OrdinalIgnoreCase)
+            || status.Equals("Canceled", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static int GetCutoffQualityScore(QualityProfile profile, int qualityIndex)
     {
         // Find the quality item matching this index

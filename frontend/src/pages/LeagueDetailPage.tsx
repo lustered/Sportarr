@@ -1077,15 +1077,19 @@ export default function LeagueDetailPage() {
     return acc;
   }, {} as Record<string, EventDetail[]>);
 
-  // Sort events within each season by episode number (descending - newest first)
+  // Sort events within each season by DATE descending (newest first), with
+  // episode number only as a same-date tiebreaker. This matches the
+  // sportarr-hub browse page: events sit in chronological order regardless of
+  // whether they carry an episode number, so postponed / cancelled events
+  // (which have no episode number) are interleaved at their real date instead
+  // of being dumped at the bottom below episode 1.
   Object.keys(groupedEvents).forEach(season => {
     groupedEvents[season].sort((a, b) => {
-      // Sort by episode number descending (highest/newest first)
-      const epA = a.episodeNumber ?? 0;
-      const epB = b.episodeNumber ?? 0;
-      if (epA !== epB) return epB - epA;
-      // Fallback to event date descending
-      return new Date(b.eventDate).getTime() - new Date(a.eventDate).getTime();
+      const dateB = new Date(b.eventDate).getTime();
+      const dateA = new Date(a.eventDate).getTime();
+      if (dateB !== dateA) return dateB - dateA;
+      // Same date: order by episode number descending as a stable tiebreaker.
+      return (b.episodeNumber ?? 0) - (a.episodeNumber ?? 0);
     });
   });
 

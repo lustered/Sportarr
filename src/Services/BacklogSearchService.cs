@@ -96,6 +96,12 @@ public class BacklogSearchService : BackgroundService
                 && e.League.Monitored
                 && e.League.SearchForMissingEvents
                 && !e.HasFile
+                // Postponed / cancelled events are not "missing" — they won't
+                // happen on their scheduled date and never appear in releases,
+                // so they must never be searched or counted as missing.
+                && e.Status != "Postponed" && e.Status != "postponed"
+                && e.Status != "Cancelled" && e.Status != "cancelled"
+                && e.Status != "Canceled" && e.Status != "canceled"
                 && e.EventDate <= searchableBefore);
 
         if (oldestAllowed.HasValue)
@@ -113,6 +119,9 @@ public class BacklogSearchService : BackgroundService
                 && e.League.Monitored
                 && e.League.SearchForCutoffUnmetEvents
                 && e.HasFile
+                && e.Status != "Postponed" && e.Status != "postponed"
+                && e.Status != "Cancelled" && e.Status != "cancelled"
+                && e.Status != "Canceled" && e.Status != "canceled"
                 && e.EventDate <= searchableBefore);
 
         if (oldestAllowed.HasValue)

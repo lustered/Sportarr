@@ -235,8 +235,14 @@ app.MapPost("/api/leagues/{leagueId:int}/seasons/{season}/automatic-search", asy
     // Pre-event searches just burn indexer API calls on content that can't exist yet.
     var postStartDelay = TimeSpan.FromHours(1);
     var searchableCutoff = DateTime.UtcNow - postStartDelay;
+    // Postponed / cancelled events are never searched: they won't appear in
+    // indexer results and aren't missing, so a whole-season search must skip
+    // them. (DB stores both Title-case and lowercase status; guard both.)
     var allEvents = await db.Events
-        .Where(e => e.LeagueId == leagueId && e.Season == season && e.Monitored)
+        .Where(e => e.LeagueId == leagueId && e.Season == season && e.Monitored
+            && e.Status != "Postponed" && e.Status != "postponed"
+            && e.Status != "Cancelled" && e.Status != "cancelled"
+            && e.Status != "Canceled" && e.Status != "canceled")
         .ToListAsync();
     var events = allEvents.Where(e => e.EventDate <= searchableCutoff).ToList();
     var skippedNotStarted = allEvents.Count - events.Count;

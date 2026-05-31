@@ -53,11 +53,18 @@ public class SeasonSearchService
         }
 
         // Get all events in this season (fetch separately since League doesn't have Events navigation property)
+        // Postponed / cancelled events are excluded — they won't appear in
+        // indexer results and aren't missing, so a manual whole-season search
+        // must not try to match them. (DB stores both Title-case and lowercase
+        // status; guard both.)
         var seasonEvents = await _db.Events
             .Include(e => e.League)
             .Include(e => e.HomeTeam)
             .Include(e => e.AwayTeam)
-            .Where(e => e.LeagueId == leagueId && e.Season == season)
+            .Where(e => e.LeagueId == leagueId && e.Season == season
+                && e.Status != "Postponed" && e.Status != "postponed"
+                && e.Status != "Cancelled" && e.Status != "cancelled"
+                && e.Status != "Canceled" && e.Status != "canceled")
             .OrderBy(e => e.EventDate)
             .ToListAsync();
 
