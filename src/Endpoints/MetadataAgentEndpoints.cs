@@ -1,0 +1,190 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.EntityFrameworkCore;
+using Sportarr.Api.Data;
+using Sportarr.Api.Models;
+
+namespace Sportarr.Api.Endpoints;
+
+/// <summary>
+/// Local media-server agent metadata API. Mirrors the JSON shape of the
+/// hub's /api/metadata/agents/* routes but serves from THIS instance's own
+/// database, so the Plex, Emby, and Jellyfin plugins can be pointed at a
+/// local Sportarr instance instead of the cloud.
+///
+/// Episode numbers are the values already stored on each event - the same
+/// numbers the renamer wrote into the filenames - so what an agent reads
+/// here can never drift from the files on disk. The numbers only change on
+/// a season refresh, which also renames the files. Cancelled and postponed
+/// events are excluded (they carry no episode number), matching the hub and
+/// the renamer. Read-only; no writes.
+/// </summary>
+public static class MetadataAgentEndpoints
+{
+    public static IEndpointRouteBuilder MapMetadataAgentEndpoints(this IEndpointRouteBuilder app)
+    {
+        // Search leagues by title (the agent's "series" match step).
+        app.MapGet("/api/metadata/agents/search", async (string? title, int? year, SportarrDbContext db) =>
+        {
+            if (string.IsNullOrWhiteSpace(title))
+                return Results.Ok(new { results = Array.Empty<object>() });
+
+            var term = title.Trim();
+            var leagues = await db.Leagues
+                .Where(l => EF.Functions.Like(l.Name, $"%{term}%"))
+                .OrderBy(l => l.Name)
+                .Take(25)
+                .ToListAsync();
+
+            var results = leagues
+                .Where(l => year == null || ParseYear(l.FormedYear) == year)
+                .Select(l => new
+                {
+                    id = l.ExternalId,
+                    title = l.Name,
+                    year = ParseYear(l.FormedYear),
+                    poster_url = l.PosterUrl,
+                    sport = l.Sport
+                })
+                .ToList();
+
+            return Results.Ok(new { results });
+        });
+
+        // League (series) details.
+        app.MapGet("/api/metadata/agents/series/{leagueId}", async (string leagueId, SportarrDbContext db) =>
+        {
+            var league = await db.Leagues.FirstOrDefaultAsync(l => l.ExternalId == leagueId);
+            if (league == null)
+                return Results.Ok(new { error = "Series not found" });
+
+            return Results.Ok(new
+            {
+                id = league.ExternalId,
+                title = league.Name,
+                sort_title = league.Name,
+                summary = league.Description,
+                poster_url = league.PosterUrl,
+                banner_url = league.BannerUrl,
+                fanart_url = (string?)null,
+                year = ParseYear(league.FormedYear),
+                studio = (string?)null,
+                genres = Array.Empty<string>(),
+                content_rating = (string?)null,
+                sport = league.Sport
+            });
+        });
+
+        // Seasons for a league.
+        app.MapGet("/api/metadata/agents/series/{leagueId}/seasons", async (string leagueId, SportarrDbContext db) =>
+        {
+            var league = await db.Leagues.FirstOrDefaultAsync(l => l.ExternalId == leagueId);
+            if (league == null)
+                return Results.Ok(new { error = "Series not found" });
+
+            var events = await db.Events
+                .Where(e => e.LeagueId == league.Id && e.SeasonNumber != null)
+                .ToListAsync();
+
+            var seasons = events
+                .GroupBy(e => e.SeasonNumber!.Value)
+                .OrderBy(g => g.Key)
+                .Select(g =>
+                {
+                    var seasonLabel = g.Select(e => e.Season).FirstOrDefault(s => !string.IsNullOrEmpty(s));
+                    return new
+                    {
+                        season_number = g.Key,
+                        title = seasonLabel ?? $"Season {g.Key}",
+                        summary = "",
+                        poster_url = (string?)null,
+                        episode_count = g.Count(e => !IsExcluded(e.Status)),
+                        year = ParseYear(seasonLabel) ?? g.Key
+                    };
+                })
+                .ToList();
+
+            return Results.Ok(new { seasons });
+        });
+
+        // Episodes for one season.
+        app.MapGet("/api/metadata/agents/series/{leagueId}/season/{seasonNumber}/episodes", async (string leagueId, string seasonNumber, SportarrDbContext db) =>
+        {
+            var league = await db.Leagues.FirstOrDefaultAsync(l => l.ExternalId == leagueId);
+            if (league == null)
+                return Results.Ok(new { episodes = Array.Empty<object>(), count = 0, leagueId, seasonNumber });
+
+            if (!int.TryParse(seasonNumber, out var sn))
+                return Results.Ok(new { episodes = Array.Empty<object>(), count = 0, leagueId, seasonNumber });
+
+            var events = await db.Events
+                .Where(e => e.LeagueId == league.Id && e.SeasonNumber == sn)
+                .ToListAsync();
+
+            var episodes = events
+                .Where(e => !IsExcluded(e.Status))
+                .OrderBy(e => e.EpisodeNumber == null)
+                .ThenBy(e => e.EpisodeNumber)
+                .ThenBy(e => e.EventDate)
+                .Select(ToEpisode)
+                .ToList();
+
+            return Results.Ok(new { episodes, count = episodes.Count, leagueId, seasonNumber });
+        });
+
+        // Single episode (event) by external id. Lets an agent resolve one
+        // game without pulling the whole season list.
+        app.MapGet("/api/metadata/agents/episode/{eventId}", async (string eventId, SportarrDbContext db) =>
+        {
+            var evt = await db.Events.FirstOrDefaultAsync(e => e.ExternalId == eventId);
+            if (evt == null)
+                return Results.Ok(new { error = "Episode not found" });
+
+            return Results.Ok(ToEpisode(evt));
+        });
+
+        return app;
+    }
+
+    // Cancelled and postponed events never occupy an episode slot, matching
+    // the hub and the renamer (which leave their EpisodeNumber null).
+    private static bool IsExcluded(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status)) return false;
+        return status.Equals("Cancelled", StringComparison.OrdinalIgnoreCase)
+            || status.Equals("Canceled", StringComparison.OrdinalIgnoreCase)
+            || status.Equals("Postponed", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Pull a 4-digit year out of a season label ("2024", "2024-2025") or a
+    // league formed-year. Returns null when no 4-digit run is present.
+    private static int? ParseYear(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var digits = new string(value.Where(char.IsDigit).Take(4).ToArray());
+        return digits.Length == 4 && int.TryParse(digits, out var y) ? y : (int?)null;
+    }
+
+    private static object ToEpisode(Event e) => new
+    {
+        id = e.ExternalId,
+        title = e.Title,
+        summary = (string?)null,
+        thumb_url = e.Images != null ? e.Images.FirstOrDefault() : null,
+        air_date = e.EventDate.ToString("yyyy-MM-dd"),
+        broadcast_date = e.BroadcastDate?.ToString("yyyy-MM-dd"),
+        season_number = e.SeasonNumber,
+        episode_number = e.EpisodeNumber,
+        part_number = (int?)null,
+        part_name = (string?)null,
+        duration_minutes = (int?)null,
+        venue = e.Venue,
+        home_team = e.HomeTeamName,
+        away_team = e.AwayTeamName,
+        sport = e.Sport
+    };
+}
