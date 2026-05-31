@@ -216,6 +216,32 @@ public static class MetadataAgentEndpoints
             });
         });
 
+        // Health endpoint the agents probe to validate a configured URL. The
+        // Plex/Emby/Jellyfin plugins call {ApiUrl}/api/health and require
+        // status == "healthy" before they'll accept a local instance, so this
+        // must return the same shape the cloud does.
+        app.MapGet("/api/health", () => Results.Ok(new
+        {
+            status = "healthy",
+            version = Sportarr.Api.Version.AppVersion,
+            build = Sportarr.Api.Version.FullVersion,
+            timestamp = DateTime.UtcNow
+        }));
+
+        // Season poster proxy. The Jellyfin/Emby image providers build
+        // {ApiUrl}/api/images/league/{id}/poster directly for season art, so
+        // serve it locally by redirecting to the league's stored poster URL
+        // (the image bytes still come from wherever that URL points - the hub
+        // - which keeps image hosting off this instance).
+        app.MapGet("/api/images/league/{leagueId}/poster", async (string leagueId, SportarrDbContext db) =>
+        {
+            var league = await db.Leagues.FirstOrDefaultAsync(l => l.ExternalId == leagueId);
+            if (league == null || string.IsNullOrWhiteSpace(league.PosterUrl))
+                return Results.NotFound();
+
+            return Results.Redirect(league.PosterUrl);
+        });
+
         return app;
     }
 
