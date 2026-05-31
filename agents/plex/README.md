@@ -7,7 +7,7 @@ Sportarr provides two methods to integrate with Plex for sports metadata:
 
 ## Features
 
-- **Rich metadata**: Posters, banners, descriptions, and air dates from sportarr.net
+- **Rich metadata**: Posters, banners, descriptions, and air dates from sportarr.net (or a local Sportarr instance)
 - **Unified metadata**: Same data you see in Sportarr appears in Plex
 - **Multi-part support**: Handles fight cards (Early Prelims, Prelims, Main Card) and motorsport sessions
 - **Year-based seasons**: Uses 4-digit year format (2024, 2025) as season numbers
@@ -99,6 +99,15 @@ After copying the bundle, restart Plex for the agent to be loaded.
 4. Under **Advanced**, select **Sportarr (Legacy)** as the agent
 5. Click **Add Library**
 
+#### 4. (Optional) Point at a Local Sportarr Instance
+
+The legacy bundle has a **Sportarr API URL** preference (Plex → plug-in
+preferences). Leave it as `https://sportarr.net` to use the cloud, or set it
+to your own instance (e.g. `http://localhost:1867`) to serve metadata
+locally. A local instance exposes the same metadata API, and the episode
+numbers it returns are the same ones it wrote into your filenames, so the
+metadata stays in sync with your files.
+
 ---
 
 ## File Naming Convention
@@ -151,7 +160,7 @@ Motorsport events support up to 5 parts (Practice, Qualifying, Sprint, Pre-Race,
 1. **Scan**: Plex scans your library and finds files matching the naming convention
 2. **Parse**: Plex extracts series name, season, and episode from filenames
 3. **Query**: Sportarr metadata provider is called to find matches
-4. **Fetch**: Full metadata (posters, descriptions, air dates) is retrieved from sportarr.net
+4. **Fetch**: Full metadata (posters, descriptions, air dates) is retrieved from sportarr.net or your configured local instance. Each event is resolved individually via `/api/metadata/match` rather than pulling the whole season list per file
 5. **Display**: Rich metadata appears in your Plex library
 
 ---

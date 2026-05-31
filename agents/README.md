@@ -1,6 +1,6 @@
 # Sportarr Media Server Agents
 
-This directory contains metadata agents for Plex and Jellyfin that fetch sports metadata from sportarr.net.
+This directory contains metadata agents for Plex, Emby, and Jellyfin that fetch sports metadata from sportarr.net or from a local Sportarr instance.
 
 ## Overview
 

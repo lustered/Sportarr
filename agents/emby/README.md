@@ -31,8 +31,10 @@ The compiled DLL will be in `bin/Release/net8.0/Emby.Plugins.Sportarr.dll`
 ## Configuration
 
 1. Go to Emby Dashboard → Plugins → Sportarr
-2. Configure the Sportarr API URL (default: https://sportarr.net)
+2. Configure the Sportarr API URL (default: https://sportarr.net). Point this at a local Sportarr instance (e.g. `http://localhost:1867`) to serve metadata from your own install; it exposes the same API. Emby validates the URL against `/api/health`.
 3. Optionally enable debug logging for troubleshooting
+
+When pointed at a local instance, episode numbers come from the same source that wrote them into your filenames, so the metadata and the files stay in sync. Each event is resolved individually via `/api/metadata/match` rather than fetching the whole season list per file.
 
 ## Usage
 
@@ -78,8 +80,10 @@ plugins consume the same JSON.
 | `/api/health` | Connection test |
 | `/api/metadata/agents/search` | Search for leagues |
 | `/api/metadata/agents/series/{id}` | Get league metadata |
-| `/api/metadata/agents/series/{id}/season/{num}/episodes` | Get events |
+| `/api/metadata/agents/series/{id}/season/{num}/episodes` | Get events for a season |
+| `/api/metadata/match?series={id}&season={num}&episode={num}` | Resolve a single event (per-file lookup) |
 | `/api/metadata/agents/episode/{id}` | Get event metadata (incl. resolved thumb_url) |
+| `/api/images/league/{id}/poster` | League poster image |
 
 The hub also keeps legacy `/api/metadata/plex/*` aliases (hidden from OpenAPI) for older agent versions; new code should use `/agents/*`.
 
