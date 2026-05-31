@@ -224,7 +224,7 @@ public static class MetadataAgentEndpoints
         {
             status = "healthy",
             version = Sportarr.Api.Version.AppVersion,
-            build = Sportarr.Api.Version.FullVersion,
+            build = Sportarr.Api.Version.GetFullVersion(),
             timestamp = DateTime.UtcNow
         }));
 
