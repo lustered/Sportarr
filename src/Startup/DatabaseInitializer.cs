@@ -2006,6 +2006,7 @@ public static class DatabaseInitializer
         EnsureColumn(db, "EventFiles", "Languages", "TEXT NOT NULL DEFAULT '[]'");
         EnsureColumn(db, "EventFiles", "ReleaseGroup", "TEXT");
         EnsureColumn(db, "MediaManagementSettings", "UserRejectedExtensions", "TEXT");
+        EnsureColumn(db, "Events", "Description", "TEXT");
 
         RelaxLegacyRootFolderColumns(db);
     }
