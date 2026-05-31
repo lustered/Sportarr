@@ -109,21 +109,18 @@ namespace Sportarr.Providers
 
             try
             {
-                var url = $"{ApiUrl}/api/metadata/agents/series/{seriesId}/season/{info.ParentIndexNumber}/episodes";
-                _logger.Debug($"[Sportarr] Fetching episodes: {url}");
+                // Resolve a single event via /match instead of pulling the
+                // whole season list and scanning it. Server-side numbering
+                // guarantees /match returns the event this file maps to, for
+                // the cost of one small response per file.
+                var url = $"{ApiUrl}/api/metadata/match?series={seriesId}&season={info.ParentIndexNumber}&episode={info.IndexNumber}";
+                _logger.Debug($"[Sportarr] Matching episode: {url}");
 
-                var response = await FetchNoCacheJsonAsync<SportarrEpisodesResponse>(url, cancellationToken);
+                var response = await FetchNoCacheJsonAsync<SportarrMatchResponse>(url, cancellationToken);
+                var ep = response?.Match?.Episode;
 
-                if (response?.Episodes != null)
+                if (ep != null)
                 {
-                    _logger.Debug($"[Sportarr] matching episode against {info.IndexNumber.Value}");
-                    var ep = response.Episodes.FirstOrDefault(e => e.EpisodeNumber == info.IndexNumber.Value);
-
-                    if (ep == null)
-                    {
-                        _logger.Warn($"[Sportarr] Failed to get Episode via IndexNumber --> {info.Name}");
-                        return result;
-                    }
 
                     var episode = new Episode
                     {

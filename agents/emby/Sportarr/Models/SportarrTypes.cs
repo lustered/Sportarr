@@ -163,6 +163,25 @@ namespace Sportarr
         public int Count { get; set; }
     }
 
+    /// <summary>
+    /// Response from /api/metadata/match, which resolves a single event
+    /// (under match.episode) instead of returning the whole season list.
+    /// </summary>
+    public class SportarrMatchResponse
+    {
+        [JsonPropertyName("match")]
+        public SportarrMatch? Match { get; set; }
+    }
+
+    /// <summary>
+    /// The match payload wrapper holding the resolved episode.
+    /// </summary>
+    public class SportarrMatch
+    {
+        [JsonPropertyName("episode")]
+        public SportarrEpisode? Episode { get; set; }
+    }
+
     #endregion
 
     #region Sportarr (Health) Models
