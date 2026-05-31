@@ -147,6 +147,75 @@ public static class MetadataAgentEndpoints
             return Results.Ok(ToEpisode(evt));
         });
 
+        // Resolve a single game by series + season + episode number, mirroring
+        // the hub's /match route. Lets an agent fetch one event per file
+        // instead of the whole season list (the expensive pattern against the
+        // cloud). Same numbering source as /episodes, so the resolved event
+        // matches the season list and the filename.
+        app.MapGet("/api/metadata/match", async (string? series, string? season, int? episode, SportarrDbContext db) =>
+        {
+            if (string.IsNullOrWhiteSpace(series) || string.IsNullOrWhiteSpace(season) || episode == null)
+                return Results.Ok(new { error = "series, season and episode are required" });
+
+            var league = await db.Leagues.FirstOrDefaultAsync(l => l.ExternalId == series);
+            if (league == null)
+                return Results.Ok(new { error = "Series not found" });
+
+            if (!int.TryParse(season, out var sn))
+                return Results.Ok(new { error = "Invalid season" });
+
+            var events = await db.Events
+                .Where(e => e.LeagueId == league.Id && e.SeasonNumber == sn)
+                .ToListAsync();
+
+            var evt = events
+                .Where(e => !IsExcluded(e.Status) && e.EpisodeNumber == episode)
+                .OrderBy(e => e.EventDate)
+                .FirstOrDefault();
+
+            if (evt == null)
+                return Results.Ok(new { error = "Episode not found" });
+
+            var seasonLabel = events.Select(e => e.Season).FirstOrDefault(s => !string.IsNullOrEmpty(s));
+
+            return Results.Ok(new
+            {
+                match = new
+                {
+                    league_id = league.ExternalId,
+                    event_id = evt.ExternalId,
+                    series = new
+                    {
+                        id = league.ExternalId,
+                        title = league.Name,
+                        sort_title = league.Name,
+                        summary = league.Description,
+                        poster_url = league.PosterUrl,
+                        banner_url = league.BannerUrl,
+                        fanart_url = (string?)null,
+                        year = ParseYear(league.FormedYear),
+                        studio = (string?)null,
+                        genres = Array.Empty<string>(),
+                        content_rating = (string?)null,
+                        sport = league.Sport
+                    },
+                    season = new
+                    {
+                        season_number = sn,
+                        title = seasonLabel ?? $"Season {sn}",
+                        summary = "",
+                        poster_url = (string?)null,
+                        episode_count = events.Count(e => !IsExcluded(e.Status)),
+                        year = ParseYear(seasonLabel) ?? sn
+                    },
+                    episode = ToEpisode(evt),
+                    confidence = 1.0
+                },
+                confidence = 1.0,
+                query = new { series, season, episode }
+            });
+        });
+
         return app;
     }
 
