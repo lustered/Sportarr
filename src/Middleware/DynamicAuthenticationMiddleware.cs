@@ -207,6 +207,10 @@ public class DynamicAuthenticationMiddleware
                path.StartsWith("/api/auth/check") ||
                path.StartsWith("/api/iptv/stream/") ||  // Stream proxy - media players make their own requests
                path.StartsWith("/api/v1/stream/") ||    // FFmpeg HLS stream endpoints
+               path.StartsWith("/api/metadata/agents/") || // Read-only media-server agent metadata (Plex/Emby/Jellyfin send no api key)
+               path.StartsWith("/api/metadata/match") ||   // Read-only single-event match for media agents
+               path.StartsWith("/api/health") ||           // Agent config validators probe this with no api key
+               path.StartsWith("/api/images/league/") ||   // Season/series art the agents fetch directly
                path.StartsWith("/initialize") ||
                path.StartsWith("/ping") ||
                path.StartsWith("/health") ||
