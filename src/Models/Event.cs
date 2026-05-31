@@ -341,6 +341,14 @@ public class Event
     public string? Status { get; set; }
 
     /// <summary>
+    /// Event description/summary from the upstream API (strDescriptionEN).
+    /// Persisted so the local media-agent metadata API can serve episode
+    /// overviews to Plex/Emby/Jellyfin without a round-trip to the hub.
+    /// </summary>
+    [JsonPropertyName("strDescriptionEN")]
+    public string? Description { get; set; }
+
+    /// <summary>
     /// Files associated with this event (for multi-part episodes)
     /// </summary>
     public List<EventFile> Files { get; set; } = new();

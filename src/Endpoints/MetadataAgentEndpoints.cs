@@ -268,7 +268,7 @@ public static class MetadataAgentEndpoints
     {
         id = e.ExternalId,
         title = e.Title,
-        summary = (string?)null,
+        summary = e.Description,
         thumb_url = e.Images != null ? e.Images.FirstOrDefault() : null,
         air_date = e.EventDate.ToString("yyyy-MM-dd"),
         broadcast_date = e.BroadcastDate?.ToString("yyyy-MM-dd"),
