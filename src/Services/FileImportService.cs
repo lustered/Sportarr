@@ -1575,52 +1575,37 @@ public class FileImportService : IFileImportService
     /// </summary>
     private Task CleanupDownloadAsync(string downloadPath, string importedFile)
     {
+        // IMPORTANT (data-loss prevention): this method must NEVER delete a directory.
+        //
+        // Removing a download's data is delegated entirely to the download client via
+        // RemoveDownloadAsync(deleteFiles: true) (see EnhancedDownloadMonitorService), which is
+        // scoped to this download's own torrent hash / nzb id and therefore only ever removes
+        // the files that one download owns. A previous implementation here resolved the
+        // download path to a directory and called Directory.Delete(..., recursive: true) on it.
+        // For a single-file torrent saved directly in a shared category/save root (e.g.
+        // /data/torrents/tv), the resolved directory WAS that shared root, so the recursive
+        // delete wiped every other download's files in it. We do not attempt to clean up
+        // folders from here anymore — the client-side removal is the authoritative cleanup.
         try
         {
-            // Delete the source file if it still exists (hardlinks leave the source in place)
+            // The only safe local action: if a move-mode import left the original source file
+            // behind (e.g. an import that hardlinked rather than moved), delete that single,
+            // explicitly-named file. We never touch its parent directory.
             if (File.Exists(importedFile))
             {
                 File.Delete(importedFile);
-                _logger.LogDebug("[Cleanup] Deleted source file: {File}", importedFile);
+                _logger.LogDebug("[Cleanup] Deleted leftover source file: {File}", importedFile);
             }
-
-            // Determine the download folder to clean up.
-            // downloadPath may be a file path (SABnzbd reports full file path) or a directory.
-            // We want the release-specific subfolder (e.g., /downloads/sportarr/ReleaseName/)
-            var folderToDelete = Directory.Exists(downloadPath)
-                ? downloadPath
-                : Path.GetDirectoryName(importedFile);
-
-            if (!string.IsNullOrEmpty(folderToDelete) && Directory.Exists(folderToDelete))
+            else
             {
-                // Safety check: Don't delete if path appears to be a root/shared/category folder
-                // Require at least 3 path components (e.g., /downloads/category/release)
-                var pathDepth = folderToDelete.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-                    .Count(s => !string.IsNullOrEmpty(s));
-                if (pathDepth < 3)
-                {
-                    _logger.LogWarning("[Cleanup] Skipping deletion - path appears to be a root folder: {Path}", folderToDelete);
-                    return Task.CompletedTask;
-                }
-
-                var remainingFiles = Directory.GetFiles(folderToDelete, "*.*", SearchOption.AllDirectories);
-                if (remainingFiles.Length > 0)
-                {
-                    _logger.LogInformation("[Cleanup] Deleting download folder with {Count} remaining files: {Folder}",
-                        remainingFiles.Length, folderToDelete);
-                    foreach (var file in remainingFiles.Take(5))
-                    {
-                        _logger.LogDebug("[Cleanup] Remaining file: {File}", Path.GetFileName(file));
-                    }
-                }
-
-                Directory.Delete(folderToDelete, recursive: true);
-                _logger.LogInformation("[Cleanup] Deleted download folder: {Folder}", folderToDelete);
+                _logger.LogDebug(
+                    "[Cleanup] No leftover source file to delete; download-client removal will handle any remaining data for: {Path}",
+                    downloadPath);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "[Cleanup] Failed to cleanup download folder: {Path}", downloadPath);
+            _logger.LogWarning(ex, "[Cleanup] Failed to delete leftover source file: {File}", importedFile);
         }
 
         return Task.CompletedTask;
