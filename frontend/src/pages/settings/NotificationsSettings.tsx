@@ -99,7 +99,7 @@ const notificationTemplates: NotificationTemplate[] = [
   {
     name: 'Webhook',
     implementation: 'Webhook',
-    description: 'Send JSON notifications to a custom URL (Sonarr/Radarr compatible)',
+    description: 'Send JSON notifications to a custom URL (works with media-automation tools like Autoscan)',
     icon: '🔗',
     fields: ['webhook', 'method', 'username', 'password', 'headers', 'onGrab', 'onDownload', 'onUpgrade', 'onRename', 'onEventAdded', 'onEventDelete', 'onEventFileDelete', 'onEventFileDeleteForUpgrade', 'onHealthIssue', 'onHealthRestored', 'onApplicationUpdate', 'onManualInteractionRequired']
   },

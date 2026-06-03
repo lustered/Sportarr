@@ -377,22 +377,7 @@ public class NotificationService : INotificationService
             return false;
         }
 
-        var payload = new Dictionary<string, object>
-        {
-            ["eventType"] = trigger.ToString(),
-            ["title"] = title,
-            ["message"] = message,
-            ["applicationUrl"] = "",
-            ["instanceName"] = "Sportarr"
-        };
-
-        if (metadata != null)
-        {
-            foreach (var kvp in metadata)
-            {
-                payload[kvp.Key] = kvp.Value;
-            }
-        }
+        var payload = BuildWebhookPayload(title, message, trigger, metadata);
 
         // Build request with configurable method (POST or PUT)
         var method = GetConfigString(config, "method", "POST").ToUpperInvariant();
@@ -467,6 +452,88 @@ public class NotificationService : INotificationService
             _logger.LogError(ex, "[Webhook] Request timed out for {Url}", webhook);
             return false;
         }
+    }
+
+    // Maps Sportarr's internal notification triggers onto the eventType strings the wider
+    // media-automation ecosystem uses in webhook payloads. The trigger enum names (OnDownload,
+    // OnGrab, ...) are connection-setting names, not payload values: tools that consume these
+    // webhooks (e.g. Autoscan) switch on "Download"/"Rename"/etc. and ignore anything else.
+    private static readonly Dictionary<NotificationTrigger, string> WebhookEventTypeMap = new()
+    {
+        [NotificationTrigger.OnGrab] = "Grab",
+        [NotificationTrigger.OnDownload] = "Download",
+        [NotificationTrigger.OnUpgrade] = "Download",
+        [NotificationTrigger.OnRename] = "Rename",
+        [NotificationTrigger.OnEventFileDelete] = "EpisodeFileDelete",
+        [NotificationTrigger.OnEventFileDeleteForUpgrade] = "EpisodeFileDelete",
+        [NotificationTrigger.OnEventDelete] = "SeriesDelete",
+        [NotificationTrigger.OnHealthIssue] = "Health",
+        [NotificationTrigger.OnHealthRestored] = "Health",
+        [NotificationTrigger.OnApplicationUpdate] = "ApplicationUpdate",
+        [NotificationTrigger.OnManualInteractionRequired] = "ManualInteractionRequired",
+        [NotificationTrigger.Test] = "Test"
+    };
+
+    /// <summary>
+    /// Builds the webhook payload. It is a superset: the standard eventType plus nested "series"
+    /// and "episodeFile" objects that path-driven consumers (e.g. Autoscan, which scans
+    /// path.Dir(path.Join(series.path, episodeFile.relativePath))) require, alongside Sportarr's
+    /// own flat metadata keys for anyone reading those directly. Consumers ignore fields they
+    /// don't recognise, so this single shape works everywhere without a per-connection toggle.
+    /// </summary>
+    private static Dictionary<string, object> BuildWebhookPayload(
+        string title, string message, NotificationTrigger trigger, Dictionary<string, object>? metadata)
+    {
+        var eventType = WebhookEventTypeMap.TryGetValue(trigger, out var mapped) ? mapped : trigger.ToString();
+
+        var payload = new Dictionary<string, object>
+        {
+            ["eventType"] = eventType,
+            ["title"] = title,
+            ["message"] = message,
+            ["applicationUrl"] = "",
+            ["instanceName"] = "Sportarr"
+        };
+
+        // Carry every Sportarr-specific metadata key as a top-level field (filePath, league,
+        // sport, quality, ...) so existing consumers of the flat payload keep working.
+        if (metadata != null)
+        {
+            foreach (var kvp in metadata)
+            {
+                payload[kvp.Key] = kvp.Value;
+            }
+        }
+
+        var filePath = metadata != null && metadata.TryGetValue("filePath", out var fp)
+            ? fp?.ToString()
+            : null;
+        var eventTitle = metadata != null && metadata.TryGetValue("eventTitle", out var et)
+            ? et?.ToString()
+            : null;
+
+        // Add the nested objects the ecosystem expects, derived from the imported file path.
+        if (!string.IsNullOrEmpty(filePath))
+        {
+            payload["series"] = new Dictionary<string, object>
+            {
+                ["path"] = Path.GetDirectoryName(filePath) ?? "",
+                ["title"] = eventTitle ?? ""
+            };
+            payload["episodeFile"] = new Dictionary<string, object>
+            {
+                ["relativePath"] = Path.GetFileName(filePath),
+                ["path"] = filePath
+            };
+        }
+        else if (eventTitle != null)
+        {
+            // No file path (e.g. a series-level delete) — still emit series so consumers have
+            // a title to log and a path field, even if empty.
+            payload["series"] = new Dictionary<string, object> { ["title"] = eventTitle };
+        }
+
+        return payload;
     }
 
     #endregion
