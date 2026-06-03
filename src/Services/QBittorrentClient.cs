@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using Sportarr.Api.Helpers;
 using Sportarr.Api.Models;
 
 namespace Sportarr.Api.Services;
@@ -157,6 +158,24 @@ public class QBittorrentClient
                 _logger.LogInformation("[qBittorrent] Magnet link - will pass URL directly to qBittorrent");
             }
 
+            // Compute the real v1 infohash locally (from the downloaded .torrent bytes or the
+            // magnet link) so the torrent can be identified deterministically after adding,
+            // rather than guessing which recently-added torrent is ours. A wrong id later
+            // drives status/removal against the wrong download. The infohash is stable for
+            // qBittorrent; debrid passthrough (Decypharr) mutates the id after caching, so it
+            // is not relied upon there (see the gate further down).
+            var knownHash = torrentBytes != null
+                ? TorrentHashHelper.TryGetHashFromTorrentBytes(torrentBytes)
+                : TorrentHashHelper.TryGetHashFromMagnet(torrentUrl);
+            if (string.IsNullOrEmpty(knownHash))
+            {
+                _logger.LogWarning("[qBittorrent] Could not compute a v1 infohash for this release; will fall back to heuristic identification after add");
+            }
+            else
+            {
+                _logger.LogInformation("[qBittorrent] Computed infohash for add: {Hash}", knownHash);
+            }
+
             if (!await LoginAsync(config, baseUrl, config.Username, config.Password))
             {
                 _logger.LogError("[qBittorrent] Login failed - check username/password in Settings > Download Clients");
@@ -292,6 +311,45 @@ public class QBittorrentClient
                 {
                     _logger.LogInformation("[qBittorrent]   Recent: {Name} | Category: '{Category}' | Added: {AddedOn}",
                         recent.Name, recent.Category, recent.AddedOn);
+                }
+
+                // Deterministic identification: for real qBittorrent the infohash is stable, so
+                // if we computed it above we look the torrent up by that exact hash instead of
+                // guessing the most-recently-added one. Guessing has caused the wrong torrent's
+                // data to be removed later. Decypharr/debrid mutate the id after caching, so they
+                // are excluded here and continue to use the heuristics below.
+                if (config.Type == DownloadClientType.QBittorrent && !string.IsNullOrEmpty(knownHash))
+                {
+                    var matchedByHash = torrents.FirstOrDefault(t =>
+                        string.Equals(t.Hash, knownHash, StringComparison.OrdinalIgnoreCase));
+
+                    // The torrent may take a moment to register; poll a little before giving up.
+                    for (var attempt = 0; matchedByHash == null && attempt < 3; attempt++)
+                    {
+                        await Task.Delay(1000);
+                        var refreshed = await GetTorrentsAsync(config);
+                        matchedByHash = refreshed?.FirstOrDefault(t =>
+                            string.Equals(t.Hash, knownHash, StringComparison.OrdinalIgnoreCase));
+                    }
+
+                    if (matchedByHash != null)
+                    {
+                        _logger.LogInformation("[qBittorrent] Identified torrent by computed infohash {Hash}: {Name}",
+                            matchedByHash.Hash, matchedByHash.Name);
+
+                        if (config.InitialState == TorrentInitialState.ForceStarted)
+                        {
+                            _logger.LogInformation("[qBittorrent] Setting torrent to Force Start (InitialState=ForceStarted)");
+                            await SetForceStartAsync(config, matchedByHash.Hash, true);
+                        }
+
+                        // Return qBittorrent's own hash value so later status lookups match exactly.
+                        return AddDownloadResult.Succeeded(matchedByHash.Hash);
+                    }
+
+                    _logger.LogWarning(
+                        "[qBittorrent] Computed infohash {Hash} not found after add; falling back to heuristic identification",
+                        knownHash);
                 }
 
                 // Try to find the torrent using multiple criteria for robustness
