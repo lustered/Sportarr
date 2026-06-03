@@ -80,58 +80,107 @@ public class RTorrentClient
     }
 
     /// <summary>
-    /// Add torrent from URL.
-    /// NOTE: Does NOT specify directory — rTorrent uses its own configured directory.
+    /// Add a torrent whose v1 infohash has already been computed locally (from the
+    /// .torrent bytes or magnet link). Sends the content to rTorrent, then confirms the
+    /// download registered under the expected hash before returning it. This replaces
+    /// guessing the hash from the torrent list (which could return an unrelated torrent
+    /// and later cause the wrong data to be removed).
+    ///
+    /// Pass either <paramref name="torrentBytes"/> (sent via load.raw[_start]) or
+    /// <paramref name="magnetUrl"/> (sent via load.start/load.normal), not both.
+    /// Returns the confirmed hash, or null if the add could not be confirmed (in which
+    /// case the caller must NOT track the download, to avoid acting on the wrong one).
     /// </summary>
-    public async Task<string?> AddTorrentAsync(DownloadClient config, string torrentUrl, string category, double? seedRatioLimit = null, int? seedTimeLimitMinutes = null)
+    public async Task<string?> AddTorrentWithHashAsync(
+        DownloadClient config, byte[]? torrentBytes, string? magnetUrl, string knownHash, string category)
     {
         try
         {
             ConfigureClient(config);
-            // Note: rTorrent doesn't support per-torrent seed limits via XML-RPC at add time
-            // Seed limit checking is handled during download monitoring instead.
 
-            // Handle initial state (Started, ForceStarted, Stopped)
-            // load.start = add and start, load.normal = add without starting
-            var command = config.InitialState == TorrentInitialState.Stopped ? "load.normal" : "load.start";
-            if (config.InitialState == TorrentInitialState.Stopped)
+            var startStopped = config.InitialState == TorrentInitialState.Stopped;
+
+            // Trailing d.*.set commands applied atomically at load time: label (rTorrent's
+            // category equivalent) and the optional directory override.
+            var commands = new List<object>();
+            if (!string.IsNullOrWhiteSpace(category))
             {
-                _logger.LogInformation("[rTorrent] Adding torrent in STOPPED state (InitialState=Stopped)");
+                commands.Add($"d.custom1.set={category}");
             }
-
-            var directory = config.Directory ?? "";
             if (!string.IsNullOrWhiteSpace(config.Directory))
             {
                 _logger.LogInformation("[rTorrent] Using directory override: {Directory}", config.Directory);
+                commands.Add($"d.directory.set={config.Directory}");
             }
 
-            var response = await SendXmlRpcRequestAsync(config, command, new object[] { directory, torrentUrl });
-
-            if (response != null)
+            string? response;
+            if (torrentBytes != null)
             {
-                _logger.LogInformation("[rTorrent] Torrent added from URL: {Url}", torrentUrl);
-
-                // rTorrent doesn't return hash directly, need to get latest torrent
-                await Task.Delay(500);
-                var torrents = await GetTorrentsAsync(config);
-                var latest = torrents?.OrderByDescending(t => t.TimeAdded).FirstOrDefault();
-
-                // Note: ForceStarted is the same as Started for rTorrent - no queue bypass concept
-                if (config.InitialState == TorrentInitialState.ForceStarted && latest?.Hash != null)
-                {
-                    _logger.LogInformation("[rTorrent] Force starting torrent (InitialState=ForceStarted) - same as Started for rTorrent");
-                }
-
-                return latest?.Hash;
+                // First arg "" is the load target (default); then the raw bytes; then commands.
+                var command = startStopped ? "load.raw" : "load.raw_start";
+                var args = new object[] { "", torrentBytes }.Concat(commands).ToArray();
+                response = await SendXmlRpcRequestAsync(config, command, args);
+                _logger.LogInformation("[rTorrent] Loaded torrent from file ({Bytes} bytes), expecting hash {Hash}",
+                    torrentBytes.Length, knownHash);
+            }
+            else if (!string.IsNullOrEmpty(magnetUrl))
+            {
+                var command = startStopped ? "load.normal" : "load.start";
+                var args = new object[] { "", magnetUrl }.Concat(commands).ToArray();
+                response = await SendXmlRpcRequestAsync(config, command, args);
+                _logger.LogInformation("[rTorrent] Loaded magnet, expecting hash {Hash}", knownHash);
+            }
+            else
+            {
+                _logger.LogError("[rTorrent] AddTorrentWithHashAsync called with neither bytes nor magnet");
+                return null;
             }
 
+            if (response == null)
+            {
+                _logger.LogWarning("[rTorrent] Add command returned no response for hash {Hash}", knownHash);
+                return null;
+            }
+
+            // Confirm rTorrent registered the download under the expected hash. rTorrent
+            // keys downloads by their infohash on load, so a magnet registers immediately
+            // even before its metadata resolves.
+            if (await WaitForTorrentAsync(config, knownHash, tries: 10, delayMs: 500))
+            {
+                _logger.LogInformation("[rTorrent] Torrent added and confirmed under hash {Hash}", knownHash);
+                return knownHash;
+            }
+
+            _logger.LogWarning(
+                "[rTorrent] Could not confirm torrent {Hash} after add; refusing to track it to avoid acting on the wrong download",
+                knownHash);
             return null;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "[rTorrent] Error adding torrent");
+            _logger.LogError(ex, "[rTorrent] Error adding torrent with known hash {Hash}", knownHash);
             return null;
         }
+    }
+
+    /// <summary>
+    /// Poll rTorrent until a download with the given hash is present, or tries are exhausted.
+    /// </summary>
+    private async Task<bool> WaitForTorrentAsync(DownloadClient config, string hash, int tries, int delayMs)
+    {
+        for (var i = 0; i < tries; i++)
+        {
+            var torrent = await GetTorrentAsync(config, hash);
+            if (torrent != null)
+            {
+                return true;
+            }
+
+            await Task.Delay(delayMs);
+        }
+
+        _logger.LogDebug("[rTorrent] Hash {Hash} not found after {Tries} tries at {Delay}ms intervals", hash, tries, delayMs);
+        return false;
     }
 
     /// <summary>
@@ -433,14 +482,24 @@ public class RTorrentClient
             new XElement("methodName", method),
             new XElement("params",
                 parameters.Select(p => new XElement("param",
-                    new XElement("value",
-                        new XElement("string", p)
-                    )
+                    new XElement("value", BuildXmlRpcValue(p))
                 ))
             )
         );
 
         return $"<?xml version=\"1.0\"?>{methodCall}";
+    }
+
+    // Most rTorrent params are strings, but load.raw / load.raw_start needs the raw
+    // .torrent bytes sent as an XML-RPC <base64> value. Serialize byte[] accordingly
+    // and fall back to <string> for everything else.
+    private static XElement BuildXmlRpcValue(object p)
+    {
+        return p switch
+        {
+            byte[] bytes => new XElement("base64", Convert.ToBase64String(bytes)),
+            _ => new XElement("string", p)
+        };
     }
 
     private List<RTorrentTorrent> ParseMulticallResponse(string xml)

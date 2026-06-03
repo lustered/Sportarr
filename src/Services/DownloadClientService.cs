@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Caching.Memory;
+using Sportarr.Api.Helpers;
 using Sportarr.Api.Models;
 using Sportarr.Api.Services.Interfaces;
 
@@ -561,7 +562,50 @@ public class DownloadClientService : IDownloadClientService
     private async Task<string?> AddToRTorrentAsync(DownloadClient config, string url, string category, double? seedRatioLimit = null, int? seedTimeLimitMinutes = null)
     {
         var client = GetRTorrentClient(config);
-        return await client.AddTorrentAsync(config, url, category, seedRatioLimit, seedTimeLimitMinutes);
+
+        // Determine the torrent's real v1 infohash locally and use it as the download id,
+        // instead of guessing the most-recently-added torrent from rTorrent's list (which
+        // could return an unrelated torrent and later cause the wrong data to be erased).
+        // rTorrent doesn't echo a hash back on load, so we send the magnet/bytes and then
+        // confirm the download registered under the computed hash.
+        if (TorrentHashHelper.IsMagnet(url))
+        {
+            var magnetHash = TorrentHashHelper.TryGetHashFromMagnet(url);
+            if (string.IsNullOrEmpty(magnetHash))
+            {
+                _logger.LogError(
+                    "[Download Client] Could not parse a v1 infohash from the magnet link; refusing to add to rTorrent to avoid tracking the wrong torrent: {Url}",
+                    url);
+                return null;
+            }
+
+            return await client.AddTorrentWithHashAsync(config, torrentBytes: null, magnetUrl: url, knownHash: magnetHash, category: category);
+        }
+
+        // .torrent URL: fetch the bytes once and send them to rTorrent (load.raw_start), so the
+        // indexer URL isn't fetched twice (some trackers issue one-time download tokens).
+        byte[] torrentBytes;
+        try
+        {
+            var http = CreateHttpClient(config.DisableSslCertificateValidation);
+            torrentBytes = await http.GetByteArrayAsync(url);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[Download Client] Failed to fetch .torrent file for rTorrent from {Url}", url);
+            return null;
+        }
+
+        var hash = TorrentHashHelper.TryGetHashFromTorrentBytes(torrentBytes);
+        if (string.IsNullOrEmpty(hash))
+        {
+            _logger.LogError(
+                "[Download Client] Could not compute a v1 infohash from the .torrent bytes; refusing to add to rTorrent to avoid tracking the wrong torrent: {Url}",
+                url);
+            return null;
+        }
+
+        return await client.AddTorrentWithHashAsync(config, torrentBytes, magnetUrl: null, knownHash: hash, category: category);
     }
 
     private async Task<string?> AddToSabnzbdAsync(DownloadClient config, string url, string category)

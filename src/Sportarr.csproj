@@ -73,6 +73,10 @@
     <PackageReference Include="System.Text.Encoding.CodePages" Version="9.0.0" />
     <!-- Fuzzy string matching for channel/EPG/event name resolvers. -->
     <PackageReference Include="FuzzySharp" Version="2.0.2" />
+    <!-- BitTorrent infohash computation: lets us derive a torrent's real infohash
+         locally (from the .torrent bytes or magnet) at add time, so the stored
+         download id is the actual torrent rather than a guess from the client list. -->
+    <PackageReference Include="MonoTorrent" Version="3.0.2" />
   </ItemGroup>
 
   <!-- Local agent worktrees may exist under src/Data/agents for experimentation.
