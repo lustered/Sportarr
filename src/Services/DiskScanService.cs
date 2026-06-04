@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Sportarr.Api.Data;
+using Sportarr.Api.Helpers;
 using Sportarr.Api.Models;
 
 namespace Sportarr.Api.Services;
@@ -174,7 +175,10 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
                 totalSkippedUnreachable++;
                 continue;
             }
-            if (!File.Exists(evt.FilePath))
+            // A path inside the recycle bin (or any excluded folder) is treated as missing,
+            // not "present". This self-heals records the watcher previously re-pointed into
+            // the recycle bin, which would otherwise pass File.Exists and never be flagged.
+            if (LibraryPathFilter.IsExcluded(evt.FilePath, config.RecycleBin) || !File.Exists(evt.FilePath))
             {
                 _logger.LogWarning("[Disk Scan] Missing file for event '{Title}': {FilePath}", evt.Title, evt.FilePath);
                 missingEventIds.Add(evt.Id);
@@ -219,7 +223,8 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
                 continue;
             }
 
-            var exists = File.Exists(file.FilePath);
+            // Treat recycle-bin / excluded paths as not present (see the Events loop above).
+            var exists = !LibraryPathFilter.IsExcluded(file.FilePath, config.RecycleBin) && File.Exists(file.FilePath);
             var previousExists = file.Exists;
 
             if (exists != previousExists)
@@ -532,6 +537,9 @@ public class DiskScanService : BackgroundService, IAsyncDisposable
             {
                 var files = Directory.EnumerateFiles(rootFolder.Path, "*.*", SearchOption.AllDirectories)
                     .Where(f => videoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()));
+                // Skip recycle bin, dot folders, and system folders so recycled/system copies
+                // are never re-discovered as new files (the source of the "47 files vs 21" inflation).
+                files = LibraryPathFilter.FilterExcluded(files);
 
                 foreach (var filePath in files)
                 {

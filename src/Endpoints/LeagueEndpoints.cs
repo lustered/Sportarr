@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Sportarr.Api.Data;
+using Sportarr.Api.Helpers;
 using Sportarr.Api.Models;
 using Sportarr.Api.Models.Requests;
 using Sportarr.Api.Services;
@@ -824,8 +825,9 @@ app.MapPost("/api/leagues/{id:int}/scan", async (int id, SportarrDbContext db, I
 
         try
         {
-            var files = Directory.EnumerateFiles(leaguePath, "*.*", SearchOption.AllDirectories)
-                .Where(f => videoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()));
+            var files = LibraryPathFilter.FilterExcluded(
+                Directory.EnumerateFiles(leaguePath, "*.*", SearchOption.AllDirectories)
+                    .Where(f => videoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant())));
 
             foreach (var filePath in files)
             {

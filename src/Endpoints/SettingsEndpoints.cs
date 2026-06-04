@@ -526,6 +526,27 @@ app.MapPut("/api/settings", async (AppSettings updatedSettings, ConfigService co
             dbSettings.ChangeFileDate = mediaManagementSettings.ChangeFileDate;
             dbSettings.RecycleBin = mediaManagementSettings.RecycleBin;
             dbSettings.RecycleBinCleanup = mediaManagementSettings.RecycleBinCleanup;
+
+            // Warn (don't block) if the recycle bin is inside a root folder. Scans and the
+            // watcher already skip the recycle bin, but keeping it outside the library roots
+            // is cleaner and avoids any chance of recycled copies being treated as media.
+            if (!string.IsNullOrWhiteSpace(dbSettings.RecycleBin) && dbSettings.RootFolders != null)
+            {
+                var rb = dbSettings.RecycleBin.Replace('\\', '/').TrimEnd('/');
+                foreach (var rf in dbSettings.RootFolders)
+                {
+                    var root = (rf.Path ?? "").Replace('\\', '/').TrimEnd('/');
+                    if (root.Length > 0 &&
+                        (rb.Equals(root, StringComparison.OrdinalIgnoreCase) ||
+                         rb.StartsWith(root + "/", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        logger.LogWarning(
+                            "[CONFIG] Recycle bin '{RecycleBin}' is inside root folder '{Root}'. This is handled (scans and the file watcher skip the recycle bin), but placing it outside your library roots is recommended.",
+                            dbSettings.RecycleBin, rf.Path);
+                        break;
+                    }
+                }
+            }
             dbSettings.SetPermissions = mediaManagementSettings.SetPermissions;
             dbSettings.FileChmod = mediaManagementSettings.FileChmod;
             dbSettings.ChmodFolder = mediaManagementSettings.ChmodFolder;

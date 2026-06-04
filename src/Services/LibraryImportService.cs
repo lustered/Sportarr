@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Sportarr.Api.Data;
+using Sportarr.Api.Helpers;
 using Sportarr.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -70,8 +71,9 @@ public class LibraryImportService
             var settings = await GetMediaManagementSettingsAsync();
 
             var searchOption = includeSubfolders ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-            var files = Directory.GetFiles(folderPath, "*.*", searchOption)
-                .Where(f => VideoExtensions.Contains(Path.GetExtension(f).ToLower()))
+            var files = LibraryPathFilter.FilterExcluded(
+                    Directory.GetFiles(folderPath, "*.*", searchOption)
+                        .Where(f => VideoExtensions.Contains(Path.GetExtension(f).ToLower())))
                 .ToList();
 
             result.TotalFiles = files.Count;

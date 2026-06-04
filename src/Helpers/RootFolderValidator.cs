@@ -101,11 +101,12 @@ public static class RootFolderValidator
     {
         var name = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, '/'));
         if (string.IsNullOrEmpty(name)) return false;
+        // Any dot-prefixed folder: .Recycle.Bin (Unraid), .Trash, .Trashes, .AppleDouble, ...
+        if (name[0] == '.') return true;
         return name.Equals("$RECYCLE.BIN", StringComparison.OrdinalIgnoreCase)
             || name.Equals("System Volume Information", StringComparison.OrdinalIgnoreCase)
             || name.Equals("lost+found", StringComparison.Ordinal)
-            || name.Equals(".Trash", StringComparison.Ordinal)
-            || name.Equals(".Trashes", StringComparison.Ordinal);
+            || name.Equals("@eaDir", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsMappedNetworkDrive(string path)
