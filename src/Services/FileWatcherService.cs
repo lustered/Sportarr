@@ -172,11 +172,18 @@ public class FileWatcherService : BackgroundService
         // Ignore files appearing inside the recycle bin / dot / system folders. A file the
         // app moved to the recycle bin must not be re-imported as a "new" library file.
         if (IsExcluded(e.FullPath)) return;
+        // Ignore events produced by Sportarr's own moves (rename, renumber, import).
+        if (SelfMoveTracker.ShouldIgnore(e.FullPath)) return;
         DebouncedHandleNewFile(e.FullPath);
     }
 
     private void OnFileRenamed(object sender, RenamedEventArgs e)
     {
+        // Skip renames that are Sportarr's own work (renumber/rename/import). Reacting to
+        // them races our synchronous DB update and can duplicate or re-point records.
+        if (SelfMoveTracker.ShouldIgnore(e.FullPath) || SelfMoveTracker.ShouldIgnore(e.OldFullPath))
+            return;
+
         // A move INTO the recycle bin (or any excluded folder) surfaces as a rename. Treat it
         // as a deletion of the old (library) path, NOT as a rename that would re-point the
         // tracked record into the recycle bin. This is the fix for event files ending up
@@ -216,6 +223,7 @@ public class FileWatcherService : BackgroundService
     {
         if (!IsVideoFile(e.FullPath)) return;
         if (IsExcluded(e.FullPath)) return;
+        if (SelfMoveTracker.ShouldIgnore(e.FullPath)) return;
         _ = HandleDeletedFileAsync(e.FullPath);
     }
 

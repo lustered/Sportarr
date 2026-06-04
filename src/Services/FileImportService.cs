@@ -915,6 +915,10 @@ public class FileImportService : IFileImportService
             settings.UseHardlinks, settings.CopyFiles, RuntimeInformation.IsOSPlatform(OSPlatform.Windows));
         _logger.LogInformation("[Transfer] Transferring: {Source} -> {Destination}", source, destination);
 
+        // Tell the watcher this transfer is ours so it doesn't treat the new file as an
+        // externally-dropped import or re-process the source's disappearance.
+        SelfMoveTracker.Register(source, destination);
+
         // Track if we should fall back to copy when hardlinks are enabled but fail.
         // UseHardlinks implies "copy mode" even if hardlink fails.
         var useHardlinksCopyFallback = false;

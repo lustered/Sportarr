@@ -1,4 +1,5 @@
 using Sportarr.Api.Data;
+using Sportarr.Api.Helpers;
 using Sportarr.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -267,52 +268,12 @@ public class FileRenameService
     private Task<bool> RenameFileAsync(Event evt, EventFile file, MediaManagementSettings settings)
     {
         var currentPath = file.FilePath;
-        var currentDir = Path.GetDirectoryName(currentPath);
-        var currentExtension = Path.GetExtension(currentPath);
+        var expectedPath = BuildExpectedPath(evt, file, settings);
 
-        if (string.IsNullOrEmpty(currentDir))
+        if (string.IsNullOrEmpty(expectedPath))
         {
-            _logger.LogWarning("[File Rename] Could not determine directory for: {FilePath}", currentPath);
+            _logger.LogWarning("[File Rename] Could not determine target path for: {FilePath}", currentPath);
             return Task.FromResult(false);
-        }
-
-        // Build the expected filename based on current event metadata
-        var tokens = BuildFileNamingTokens(evt, file);
-        var expectedFileName = _fileNamingService.BuildFileName(
-            settings.StandardFileFormat,
-            tokens,
-            currentExtension);
-
-        string expectedPath;
-        string? rootFolder = null;
-
-        // Only reorganize folders if the setting is enabled
-        // Otherwise, just rename the file in its current directory
-        if (settings.ReorganizeFolders)
-        {
-            // Determine the root folder this file belongs to
-            rootFolder = FindRootFolder(currentPath, settings.RootFolders);
-
-            if (rootFolder != null)
-            {
-                // Build expected folder path using current folder settings (league/season/event)
-                var folderPath = _fileNamingService.BuildFolderPath(settings, evt);
-                var expectedDir = string.IsNullOrWhiteSpace(folderPath)
-                    ? rootFolder
-                    : Path.Combine(rootFolder, folderPath);
-                expectedPath = Path.Combine(expectedDir, expectedFileName);
-            }
-            else
-            {
-                // No root folder match - just rename in current directory
-                _logger.LogDebug("[File Rename] Could not determine root folder for reorganization, renaming in place");
-                expectedPath = Path.Combine(currentDir, expectedFileName);
-            }
-        }
-        else
-        {
-            // ReorganizeFolders is disabled - only rename filename, don't move to different folder
-            expectedPath = Path.Combine(currentDir, expectedFileName);
         }
 
         // Check if rename/move is needed
@@ -322,19 +283,21 @@ public class FileRenameService
             return Task.FromResult(false);
         }
 
-        // Check if destination already exists (different file)
-        if (File.Exists(expectedPath) && !string.Equals(currentPath, expectedPath, StringComparison.OrdinalIgnoreCase))
+        // Single-file rename refuses to clobber an existing destination. Season-wide
+        // renumbering (RenameAllFilesInSeasonAsync) instead resolves E22->E21 style shuffles
+        // with a two-phase temp-name move rather than skipping.
+        if (File.Exists(expectedPath))
         {
             _logger.LogWarning("[File Rename] Destination file already exists: {ExpectedPath}. Skipping rename.", expectedPath);
             return Task.FromResult(false);
         }
 
         // Create destination directory if it doesn't exist
-        var expectedDir2 = Path.GetDirectoryName(expectedPath);
-        if (!string.IsNullOrEmpty(expectedDir2) && !Directory.Exists(expectedDir2))
+        var expectedDir = Path.GetDirectoryName(expectedPath);
+        if (!string.IsNullOrEmpty(expectedDir) && !Directory.Exists(expectedDir))
         {
-            _logger.LogInformation("[File Rename] Creating directory: {Directory}", expectedDir2);
-            Directory.CreateDirectory(expectedDir2);
+            _logger.LogInformation("[File Rename] Creating directory: {Directory}", expectedDir);
+            Directory.CreateDirectory(expectedDir);
         }
 
         // Perform the rename/move
@@ -342,13 +305,17 @@ public class FileRenameService
 
         try
         {
+            // Tell the watcher this move is ours so it doesn't re-process the rename.
+            SelfMoveTracker.Register(currentPath, expectedPath);
             File.Move(currentPath, expectedPath);
             file.FilePath = expectedPath;
 
             // Clean up empty source directory if settings allow
-            if (settings.DeleteEmptyFolders && currentDir != expectedDir2)
+            var currentDir = Path.GetDirectoryName(currentPath);
+            if (settings.DeleteEmptyFolders && !string.IsNullOrEmpty(currentDir) &&
+                !string.Equals(currentDir, expectedDir, StringComparison.OrdinalIgnoreCase))
             {
-                TryDeleteEmptyDirectories(currentDir, rootFolder);
+                TryDeleteEmptyDirectories(currentDir, FindRootFolder(currentPath, settings.RootFolders));
             }
 
             _logger.LogInformation("[File Rename] Successfully moved file for event '{Title}'", evt.Title);
@@ -360,6 +327,48 @@ public class FileRenameService
                 currentPath, expectedPath);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Compute the path a file should have given the current event metadata and naming
+    /// settings. Returns null if the target can't be determined. Does not touch disk.
+    /// </summary>
+    private string? BuildExpectedPath(Event evt, EventFile file, MediaManagementSettings settings)
+    {
+        var currentPath = file.FilePath;
+        var currentDir = Path.GetDirectoryName(currentPath);
+        var currentExtension = Path.GetExtension(currentPath);
+
+        if (string.IsNullOrEmpty(currentDir))
+        {
+            _logger.LogWarning("[File Rename] Could not determine directory for: {FilePath}", currentPath);
+            return null;
+        }
+
+        var tokens = BuildFileNamingTokens(evt, file);
+        var expectedFileName = _fileNamingService.BuildFileName(
+            settings.StandardFileFormat,
+            tokens,
+            currentExtension);
+
+        // Only reorganize folders if the setting is enabled; otherwise rename in place.
+        if (settings.ReorganizeFolders)
+        {
+            var rootFolder = FindRootFolder(currentPath, settings.RootFolders);
+            if (rootFolder != null)
+            {
+                var folderPath = _fileNamingService.BuildFolderPath(settings, evt);
+                var expectedDir = string.IsNullOrWhiteSpace(folderPath)
+                    ? rootFolder
+                    : Path.Combine(rootFolder, folderPath);
+                return Path.Combine(expectedDir, expectedFileName);
+            }
+
+            _logger.LogDebug("[File Rename] Could not determine root folder for reorganization, renaming in place");
+            return Path.Combine(currentDir, expectedFileName);
+        }
+
+        return Path.Combine(currentDir, expectedFileName);
     }
 
     /// <summary>
@@ -482,16 +491,79 @@ public class FileRenameService
             .Where(e => e.Files.Any())
             .ToListAsync();
 
-        int totalRenamed = 0;
-
+        // Build the full set of (file -> expected path) moves up front. Renumbering can
+        // require swaps (E22 -> E21 while E21 -> E20), so a naive per-file rename would hit an
+        // existing destination and skip, leaving the old file behind (the duplicate-episode
+        // bug). Resolve this with a two-phase move: first move every file that needs renaming
+        // to a unique temp name (freeing all final names), then move each temp to its final
+        // name and update the DB.
+        var planned = new List<(EventFile File, string CurrentPath, string ExpectedPath)>();
         foreach (var evt in events)
         {
-            var renamed = await RenameEventFilesAsync(evt.Id, settings);
-            totalRenamed += renamed;
+            foreach (var file in evt.Files)
+            {
+                if (!file.Exists || string.IsNullOrEmpty(file.FilePath) || !File.Exists(file.FilePath))
+                    continue;
+
+                var expectedPath = BuildExpectedPath(evt, file, settings);
+                if (string.IsNullOrEmpty(expectedPath) ||
+                    string.Equals(file.FilePath, expectedPath, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                planned.Add((file, file.FilePath, expectedPath));
+            }
+        }
+
+        if (planned.Count == 0)
+            return 0;
+
+        // Phase 1: stage every source under a unique temp name, freeing all final names.
+        var staged = new List<(EventFile File, string TempPath, string ExpectedPath)>();
+        foreach (var move in planned)
+        {
+            try
+            {
+                var expectedDir = Path.GetDirectoryName(move.ExpectedPath);
+                if (!string.IsNullOrEmpty(expectedDir) && !Directory.Exists(expectedDir))
+                    Directory.CreateDirectory(expectedDir);
+
+                var tempPath = move.ExpectedPath + ".sportarr-rename-" + Guid.NewGuid().ToString("N") + ".tmp";
+                SelfMoveTracker.Register(move.CurrentPath, tempPath);
+                File.Move(move.CurrentPath, tempPath);
+                staged.Add((move.File, tempPath, move.ExpectedPath));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[File Rename] Stage step failed for {Path}; leaving file in place", move.CurrentPath);
+            }
+        }
+
+        // Phase 2: move each staged temp file to its final name and update the DB record.
+        int totalRenamed = 0;
+        foreach (var s in staged)
+        {
+            try
+            {
+                if (File.Exists(s.ExpectedPath))
+                {
+                    _logger.LogWarning("[File Rename] Final destination unexpectedly exists; leaving staged file: {Path}", s.ExpectedPath);
+                    continue;
+                }
+
+                SelfMoveTracker.Register(s.TempPath, s.ExpectedPath);
+                File.Move(s.TempPath, s.ExpectedPath);
+                s.File.FilePath = s.ExpectedPath;
+                totalRenamed++;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[File Rename] Finalize step failed for {Path}", s.ExpectedPath);
+            }
         }
 
         if (totalRenamed > 0)
         {
+            await _db.SaveChangesAsync();
             _logger.LogInformation("[File Rename] Renamed {Count} files in league {LeagueId}, season {Season}",
                 totalRenamed, leagueId, season);
         }
